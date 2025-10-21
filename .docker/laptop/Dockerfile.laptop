@@ -38,6 +38,8 @@ RUN wget \
 ENV PATH /root/miniconda3/bin:$PATH
 
 # create conda environment
+RUN conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
+RUN conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
 RUN conda create -n "robot" python=3.7
 SHELL ["conda", "run", "-n", "robot", "/bin/bash", "-c"]
 
