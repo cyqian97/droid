@@ -28,10 +28,6 @@ RUN wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/nul
     apt-get update && \
     apt-get install -y cmake
 
-# copy project code to container
-COPY . /app
-WORKDIR /app
-
 # install miniconda 
 RUN wget \
     https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh \
@@ -40,15 +36,29 @@ RUN wget \
     && rm -f Miniconda3-latest-Linux-x86_64.sh
 ENV PATH /root/miniconda3/bin:$PATH
 
+# copy project code to container
+COPY . /app
+WORKDIR /app
+
 # setup polymetis conda env
 WORKDIR ${NUC_POLYMETIS_DIR}
+RUN conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
+RUN conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
 RUN conda env create -f ./polymetis/environment.yml && \
     conda run -n polymetis-local pip install -e ./polymetis
 SHELL ["conda", "run", "-n", "polymetis-local", "/bin/bash", "-c"]
 
 # build libfranka and polymetis
-RUN ./scripts/build_libfranka.sh ${LIBFRANKA_VERSION} && \
-    mkdir -p ./polymetis/build && \
+RUN apt-get install -y build-essential cmake git libpoco-dev libeigen3-dev libfmt-dev \
+    && apt-get install -y lsb-release curl
+RUN mkdir -p /etc/apt/keyrings
+RUN curl -fsSL http://robotpkg.openrobots.org/packages/debian/robotpkg.asc | sudo tee /etc/apt/keyrings/robotpkg.asc
+RUN echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/robotpkg.asc] http://robotpkg.openrobots.org/packages/debian/pub $(lsb_release -cs) robotpkg" | sudo tee /etc/apt/sources.list.d/robotpkg.list
+RUN apt-get update && apt-get install -y robotpkg-pinocchio
+ENV LD_LIBRARY_PATH=/root/miniconda3/envs/polymetis-local/lib:/root/miniconda3/lib:${LD_LIBRARY_PATH}
+ENV LIBRARY_PATH=/root/miniconda3/envs/polymetis-local/lib:/root/miniconda3/lib:${LIBRARY_PATH}
+RUN ./scripts/build_libfranka.sh ${LIBFRANKA_VERSION} 
+RUN mkdir -p ./polymetis/build && \
     cd ./polymetis/build && \
     cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_FRANKA=ON -DBUILD_TESTS=ON -DBUILD_DOCS=ON && \
     make -j

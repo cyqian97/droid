@@ -20,28 +20,28 @@ if [ "$first_time" = "yes" ]; then
         ROOT_DIR="$(git rev-parse --show-toplevel)"
         cd $ROOT_DIR && git submodule update --recursive --remote --init
 
-        # install docker
-        echo -e "\nInstall docker \n"
+        # # install docker
+        # echo -e "\nInstall docker \n"
 
-        apt-get update
-        apt-get install ca-certificates curl gnupg
-        install -m 0755 -d /etc/apt/keyrings
-        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-        chmod a+r /etc/apt/keyrings/docker.gpg
-        echo \
-          "deb [arch="$(dpkg --print-architecture)" signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
-          "$(. /etc/os-release && echo "$VERSION_CODENAME")" stable" | \
-          sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-        apt-get update
-        apt-get install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-        systemctl enable docker
+        # apt-get update
+        # apt-get install ca-certificates curl gnupg
+        # install -m 0755 -d /etc/apt/keyrings
+        # curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+        # chmod a+r /etc/apt/keyrings/docker.gpg
+        # echo \
+        #   "deb [arch="$(dpkg --print-architecture)" signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+        #   "$(. /etc/os-release && echo "$VERSION_CODENAME")" stable" | \
+        #   sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+        # apt-get update
+        # apt-get install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+        # systemctl enable docker
 
-        # perform rt-patch
-        echo -e "\nPerform realtime patch of kernel \n"
+        # # perform rt-patch
+        # echo -e "\nPerform realtime patch of kernel \n"
 
-        apt update && apt install ubuntu-advantage-tools
-        pro attach $UBUNTU_PRO_TOKEN
-        pro enable realtime-kernel
+        # apt update && apt install ubuntu-advantage-tools
+        # pro attach $UBUNTU_PRO_TOKEN
+        # pro enable realtime-kernel
 
         # cpu frequency scaling
         echo -e "\nSet cpu frequency scaling settings \n"
@@ -76,12 +76,11 @@ export VARIED_CAMERA_2_ID=$varied_camera_2_id
 export UBUNTU_PRO_TOKEN=$ubuntu_pro_token
 rm temp_env_vars.sh
 
-export LIBFRANKA_VERSION=0.17.0
-# if [ "$ROBOT_TYPE" == "panda" ]; then
-#         export LIBFRANKA_VERSION=0.9.0
-# else
-#         export LIBFRANKA_VERSION=0.17.0
-# fi
+if [ "$ROBOT_TYPE" == "panda" ]; then
+        export LIBFRANKA_VERSION=0.9.0
+else
+        export LIBFRANKA_VERSION=0.10.0
+fi
 
 # build control server container 
 

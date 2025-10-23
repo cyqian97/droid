@@ -3,7 +3,7 @@ FROM ubuntu:bionic
 
 # set robot parameters
 ENV ROBOT_TYPE=fr3
-ENV LIBFRANKA_VERSION=0.10.0
+ENV LIBFRANKA_VERSION=0.17.0
 ENV ROBOT_IP=172.16.0.1 
 ENV NUC_IP=172.16.0.2
 
@@ -38,6 +38,8 @@ ENV PATH /root/miniconda3/bin:$PATH
 
 # setup polymetis conda env
 WORKDIR ${NUC_POLYMETIS_DIR}
+RUN conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
+RUN conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
 RUN conda env create -f ./polymetis/environment.yml && \
     conda run -n polymetis-local pip install -e ./polymetis
 SHELL ["conda", "run", "-n", "polymetis-local", "/bin/bash", "-c"]
