@@ -34,4 +34,7 @@ services:
     runtime: nvidia
     privileged: true
     network_mode: "host"
-    command: python /app/scripts/main.py
+    extra_hosts:
+      - "nuc:192.168.1.6"  # Replace with actual NUC IP
+    # command: python /app/scripts/main.py
+    command: sleep infinity
