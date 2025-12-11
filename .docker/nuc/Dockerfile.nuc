@@ -1,5 +1,14 @@
 # pull ubuntu base image
-FROM ubuntu:bionic
+FROM ubuntu:focal
+# Avoid interactive prompts during build
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=America/New_York
+
+RUN apt-get update && apt-get install -y \
+    tzdata \
+    git \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
 
 # build args
 ARG ROBOT_TYPE=${ROBOT_TYPE}
