@@ -30,7 +30,7 @@ class ServerInterface:
             attempt_n_times(func_list, max_attempts=2)
 
     def establish_connection(self):
-        self.server = zerorpc.Client(heartbeat=20)
+        self.server = zerorpc.Client(heartbeat=20, timeout=120)
         self.server.connect("tcp://" + self.ip_address + ":4242")
 
     def launch_controller(self):

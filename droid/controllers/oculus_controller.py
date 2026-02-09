@@ -23,8 +23,8 @@ class VRPolicy:
         max_rot_vel: float = 1,
         max_gripper_vel: float = 1,
         spatial_coeff: float = 1,
-        pos_action_gain: float = 5,
-        rot_action_gain: float = 2,
+        pos_action_gain: float = 3,
+        rot_action_gain: float = 1,
         gripper_action_gain: float = 3,
         rmat_reorder: list = [-2, -1, -3, 4],
     ):
