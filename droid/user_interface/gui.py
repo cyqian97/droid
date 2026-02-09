@@ -369,7 +369,7 @@ class CalibrationPage(tk.Frame):
         how_to_text_lbl = Label(self, text=how_to_calibrate_text, font=Font(size=18))
         how_to_text_lbl.pack(pady=20)
 
-        longest_name = max([len(get_camera_name(cam_id)) for cam_id in controller.cam_ids])
+        longest_name = max([len(get_camera_name(cam_id)) for cam_id in controller.cam_ids]) if controller.cam_ids else 10
 
         self.button_dict = {}
         for i in range(len(controller.cam_ids)):
