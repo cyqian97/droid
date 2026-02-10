@@ -26,28 +26,28 @@ class FrankaRobot:
         self._robot_process = run_terminal_command(
             "echo " + sudo_password + " | sudo -S " + "bash " + dir_path + "/launch_robot.sh"
         )
-        self._gripper_process = run_terminal_command(
-            "echo " + sudo_password + " | sudo -S " + "bash " + dir_path + "/launch_gripper.sh"
-        )
+        # self._gripper_process = run_terminal_command(
+        #     "echo " + sudo_password + " | sudo -S " + "bash " + dir_path + "/launch_gripper.sh"
+        # )
         self._server_launched = True
         time.sleep(5)
 
     def launch_robot(self):
         self._robot = RobotInterface(ip_address="localhost")
         self._gripper = GripperInterface(ip_address="localhost")
-        self._max_gripper_width = self._gripper.metadata.max_width
+        # self._max_gripper_width = self._gripper.metadata.max_width
         self._ik_solver = RobotIKSolver()
         self._controller_not_loaded = False
 
     def kill_controller(self):
         self._robot_process.kill()
-        self._gripper_process.kill()
+        # self._gripper_process.kill()
 
     def update_command(self, command, action_space="cartesian_velocity", gripper_action_space=None, blocking=False):
         action_dict = self.create_action_dict(command, action_space=action_space, gripper_action_space=gripper_action_space)
 
         self.update_joints(action_dict["joint_position"], velocity=False, blocking=blocking)
-        self.update_gripper(action_dict["gripper_position"], velocity=False, blocking=blocking)
+        # self.update_gripper(action_dict["gripper_position"], velocity=False, blocking=blocking)
 
         return action_dict
 
@@ -157,7 +157,8 @@ class FrankaRobot:
 
     def get_robot_state(self):
         robot_state = self._robot.get_robot_state()
-        gripper_position = self.get_gripper_position()
+        # gripper_position = self.get_gripper_position()
+        gripper_position = None
         pos, quat = self._robot.robot_model.forward_kinematics(torch.Tensor(robot_state.joint_positions))
         cartesian_position = pos.tolist() + quat_to_euler(quat.numpy()).tolist()
 
@@ -195,21 +196,21 @@ class FrankaRobot:
         action_dict = {"robot_state": robot_state}
         velocity = "velocity" in action_space
 
-        if gripper_action_space is None:
-            gripper_action_space = "velocity" if velocity else "position"
-        assert gripper_action_space in ["velocity", "position"]
+        # if gripper_action_space is None:
+        #     gripper_action_space = "velocity" if velocity else "position"
+        # assert gripper_action_space in ["velocity", "position"]
             
 
-        if gripper_action_space == "velocity":
-            action_dict["gripper_velocity"] = action[-1]
-            gripper_delta = self._ik_solver.gripper_velocity_to_delta(action[-1])
-            gripper_position = robot_state["gripper_position"] + gripper_delta
-            action_dict["gripper_position"] = float(np.clip(gripper_position, 0, 1))
-        else:
-            action_dict["gripper_position"] = float(np.clip(action[-1], 0, 1))
-            gripper_delta = action_dict["gripper_position"] - robot_state["gripper_position"]
-            gripper_velocity = self._ik_solver.gripper_delta_to_velocity(gripper_delta)
-            action_dict["gripper_delta"] = gripper_velocity
+        # if gripper_action_space == "velocity":
+        #     action_dict["gripper_velocity"] = action[-1]
+        #     gripper_delta = self._ik_solver.gripper_velocity_to_delta(action[-1])
+        #     gripper_position = robot_state["gripper_position"] + gripper_delta
+        #     action_dict["gripper_position"] = float(np.clip(gripper_position, 0, 1))
+        # else:
+        #     action_dict["gripper_position"] = float(np.clip(action[-1], 0, 1))
+        #     gripper_delta = action_dict["gripper_position"] - robot_state["gripper_position"]
+        #     gripper_velocity = self._ik_solver.gripper_delta_to_velocity(gripper_delta)
+        #     action_dict["gripper_delta"] = gripper_velocity
 
         if "cartesian" in action_space:
             if velocity:

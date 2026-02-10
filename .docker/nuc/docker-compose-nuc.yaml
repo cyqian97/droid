@@ -2,7 +2,8 @@ version: "3"
 
 services: 
   setup_nuc:
-    image: ghcr.io/droid-dataset/droid_nuc:${ROBOT_TYPE}
+    # image: ghcr.io/droid-dataset/droid_nuc:${ROBOT_TYPE}
+    image: droid-nuc-test
     environment:
       ROBOT_TYPE: ${ROBOT_TYPE}
       LIBFRANKA_VERSION: ${LIBFRANKA_VERSION}
@@ -34,4 +35,4 @@ services:
     deploy:
       restart_policy: 
         condition: any
-
+    command: sleep infinity
