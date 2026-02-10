@@ -36,6 +36,7 @@ class FrankaRobot:
         self._robot = RobotInterface(ip_address="localhost")
         self._gripper = GripperInterface(ip_address="localhost")
         # self._max_gripper_width = self._gripper.metadata.max_width
+        self._max_gripper_width = 1.0#self._gripper.metadata.max_width
         self._ik_solver = RobotIKSolver()
         self._controller_not_loaded = False
 
@@ -157,8 +158,11 @@ class FrankaRobot:
 
     def get_robot_state(self):
         robot_state = self._robot.get_robot_state()
-        # gripper_position = self.get_gripper_position()
-        gripper_position = None
+        try:
+            gripper_position = self.get_gripper_position()
+        except Exception as e:
+            print(f"WARNING: Failed to get gripper position: {e}. Defaulting to 0.0 (fully open).")
+            gripper_position = 0.0
         pos, quat = self._robot.robot_model.forward_kinematics(torch.Tensor(robot_state.joint_positions))
         cartesian_position = pos.tolist() + quat_to_euler(quat.numpy()).tolist()
 

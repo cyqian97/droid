@@ -17,6 +17,8 @@ services:
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - ${DOCKER_XAUTH}:${DOCKER_XAUTH}
+      - ${ROOT_DIR}/droid:/app/droid              # <-- Add this line
+      - ${ROOT_DIR}/scripts:/app/scripts          # <-- Add this line
       - ${ROOT_DIR}/droid/misc/parameters.py:/app/droid/misc/parameters.py
       - ${ROOT_DIR}/droid/calibration/calibration_info.json:/app/droid/calibration/calibration_info.json
       - ${ROOT_DIR}/data:/app/data
@@ -34,4 +36,7 @@ services:
     runtime: nvidia
     privileged: true
     network_mode: "host"
-    command: python /app/scripts/main.py
+    extra_hosts:
+      - "nuc:192.168.1.6"  # Replace with actual NUC IP
+    # command: python /app/scripts/main.py
+    command: sleep infinity

@@ -1,8 +1,11 @@
 #!/bin/bash
+set -e
 
-# activate conda
-source ~/miniconda3/bin/activate
+# Initialize conda for bash
+source ~/miniconda3/etc/profile.d/conda.sh
+
+# Activate the robot environment
 conda activate robot
 
-# run user command
+# Run the user's command
 exec "$@"

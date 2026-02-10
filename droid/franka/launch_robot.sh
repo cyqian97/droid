@@ -4,7 +4,7 @@ find /root/miniconda3 -type d -name "lib" | sudo tee /etc/ld.so.conf.d/conda-pol
 # Update cache
 sudo ldconfig
 
-source ~/miniconda3/etc/profile.d/conda.sh
+source /root/miniconda3/etc/profile.d/conda.sh
 conda activate polymetis-local
 pkill -9 run_server
 pkill -9 franka_panda_cl

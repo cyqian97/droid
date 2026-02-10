@@ -63,7 +63,7 @@ class RobotEnv(gym.Env):
         return action_info
 
     def reset(self, randomize=False):
-        self._robot.update_gripper(0, velocity=False, blocking=True)
+        # self._robot.update_gripper(0, velocity=False, blocking=True)
 
         if randomize:
             noise = np.random.uniform(low=self.randomize_low, high=self.randomize_high)
