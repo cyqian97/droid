@@ -11,8 +11,10 @@ services:
       ROBOT_IP: ${ROBOT_IP}
       LAPTOP_IP: ${LAPTOP_IP}
     volumes:
-      - ${ROOT_DIR}/droid:/app/droid              # <-- Add this line
+      - ${ROOT_DIR}/droid/franka:/app/droid/franka
+      - ${ROOT_DIR}/droid/robot_env.py:/app/droid/robot_env.py
       - ${ROOT_DIR}/scripts:/app/scripts          # <-- Add this line
+      - ${ROOT_DIR}/droid/misc/server_interface.py:/app/droid/misc/server_interface.py
       - ${ROOT_DIR}/droid/misc/parameters.py:/app/droid/misc/parameters.py
       - ${ROOT_DIR}/config/${ROBOT_TYPE}/franka_hardware.yaml:/app/droid/fairo/polymetis/polymetis/conf/robot_client/franka_hardware.yaml
       - ${ROOT_DIR}/config/${ROBOT_TYPE}/franka_panda.yaml:/app/droid/fairo/polymetis/polymetis/conf/robot_model/franka_panda.yaml
