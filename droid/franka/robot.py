@@ -35,7 +35,11 @@ class FrankaRobot:
     def launch_robot(self):
         self._robot = RobotInterface(ip_address="localhost")
         self._gripper = GripperInterface(ip_address="localhost")
-        self._max_gripper_width = self._gripper.metadata.max_width
+        try:
+            self._max_gripper_width = self._gripper.metadata.max_width
+        except (AttributeError, Exception) as e:
+            print(f"WARNING: Could not get gripper metadata: {e}. Using default max_width=0.08")
+            self._max_gripper_width = 0.08
         self._ik_solver = RobotIKSolver()
         self._controller_not_loaded = False
 

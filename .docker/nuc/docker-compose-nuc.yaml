@@ -18,6 +18,7 @@ services:
       - ${ROOT_DIR}/droid/misc/parameters.py:/app/droid/misc/parameters.py
       - ${ROOT_DIR}/config/${ROBOT_TYPE}/franka_hardware.yaml:/app/droid/fairo/polymetis/polymetis/conf/robot_client/franka_hardware.yaml
       - ${ROOT_DIR}/config/${ROBOT_TYPE}/franka_panda.yaml:/app/droid/fairo/polymetis/polymetis/conf/robot_model/franka_panda.yaml
+      - ${ROOT_DIR}/config/${ROBOT_TYPE}/franka_hand.yaml:/app/droid/fairo/polymetis/polymetis/conf/gripper/franka_hand.yaml
     build: 
       context: ../../
       dockerfile: .docker/nuc/Dockerfile.nuc
