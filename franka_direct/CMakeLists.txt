@@ -88,8 +88,9 @@ add_executable(franka_server
 )
 
 target_include_directories(franka_server PRIVATE
-    ${CMAKE_BINARY_DIR}       # generated pb headers
+    ${CMAKE_BINARY_DIR}                   # generated pb headers
     ${FRANKA_INCLUDE_DIR}
+    ${FRANKA_BASE}/common/include         # research_interface/* headers
 )
 
 target_link_libraries(franka_server PRIVATE
