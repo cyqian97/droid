@@ -82,6 +82,7 @@ public:
         std::lock_guard<std::mutex> lk(s_.mtx);
         for (double v : s_.current_pose) rep->add_pose(v);
         for (double v : s_.current_q)    rep->add_q(v);
+        for (double v : s_.target_pose)  rep->add_target_pose(v);
         rep->set_cmd_success_rate(s_.cmd_success_rate);
         rep->set_ready(s_.ready);
         rep->set_error(s_.error);

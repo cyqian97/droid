@@ -30,15 +30,20 @@ class FrankaDirectClient:
     def get_robot_state(self):
         """
         Returns dict with keys:
-            pose              – list[16] col-major O_T_EE
+            pose              – list[16] col-major O_T_EE (actual measured pose)
+            target_pose       – list[16] col-major current commanded target
             q                 – list[7]  joint positions
             cmd_success_rate  – float in [0, 1]
             ready             – bool
             error             – str (empty if OK)
+
+        Use ``target_pose`` (not ``pose``) as the starting point for new
+        SetCartesianTarget calls to avoid velocity discontinuities.
         """
         resp = self.stub.GetRobotState(pb2.Empty(), timeout=self.timeout)
         return {
             "pose":             list(resp.pose),
+            "target_pose":      list(resp.target_pose),
             "q":                list(resp.q),
             "cmd_success_rate": resp.cmd_success_rate,
             "ready":            resp.ready,

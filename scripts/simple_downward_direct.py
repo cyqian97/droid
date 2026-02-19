@@ -47,9 +47,9 @@ def parse_args():
     p.add_argument("--port",     type=int, default=50052)
     p.add_argument("--hz",       type=float, default=25.0,
                    help="Control frequency in Hz (default: 25)")
-    p.add_argument("--steps",    type=int,   default=200,
+    p.add_argument("--steps",    type=int,   default=2000,
                    help="Number of control steps (default: 200)")
-    p.add_argument("--step_mm",  type=float, default=0.25,
+    p.add_argument("--step_mm",  type=float, default=0.000,
                    help="Downward step size per command in mm (default: 0.25 → 50 mm total)")
     p.add_argument("--min_z",    type=float, default=0.10,
                    help="Safety lower limit for z in metres (default: 0.10)")
@@ -92,13 +92,18 @@ def main():
         sys.exit(1)
 
     # ── Get initial pose ──────────────────────────────────────────────────────
-    pose = state["pose"]            # list[16], col-major O_T_EE
+    # Use target_pose (= server's O_T_EE_d at startup) rather than pose
+    # (= O_T_EE actual).  Even a sub-millimetre difference between the two
+    # looks like an infinite-velocity jump to the Cartesian motion generator
+    # and triggers a velocity-discontinuity reflex.
+    pose = state["target_pose"]     # list[16], col-major — server's current target
     if len(pose) != 16:
         print(f"[ERROR] Expected 16 pose values, got {len(pose)}")
         sys.exit(1)
 
     initial_z = pose[14]
-    print(f"[OK] Initial EE pose:  x={pose[12]:.3f}  y={pose[13]:.3f}  z={initial_z:.4f} m")
+    print(f"[OK] Initial EE target: x={pose[12]:.3f}  y={pose[13]:.3f}  z={initial_z:.4f} m")
+    print(f"     actual EE pose:    x={state['pose'][12]:.3f}  y={state['pose'][13]:.3f}  z={state['pose'][14]:.4f} m")
     print(f"     cmd_success_rate = {state['cmd_success_rate']:.2f}")
 
     if initial_z <= args.min_z:

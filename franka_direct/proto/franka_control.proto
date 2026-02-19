@@ -20,11 +20,12 @@ message CartesianTarget {
 }
 
 message RobotState {
-    repeated double pose = 1;           // O_T_EE col-major (16 doubles)
-    repeated double q    = 2;           // joint positions (7 doubles)
-    double cmd_success_rate = 3;        // libfranka control_command_success_rate
-    bool   ready            = 4;        // true once control loop is running
-    string error            = 5;        // non-empty if fatal error
+    repeated double pose         = 1;   // O_T_EE col-major (16 doubles) — actual measured pose
+    repeated double q            = 2;   // joint positions (7 doubles)
+    double cmd_success_rate      = 3;   // libfranka control_command_success_rate
+    bool   ready                 = 4;   // true once control loop is running
+    string error                 = 5;   // non-empty if fatal error
+    repeated double target_pose  = 6;  // current commanded target (O_T_EE_d at init, then client-set)
 }
 
 message CommandResult {
