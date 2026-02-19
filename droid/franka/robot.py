@@ -51,7 +51,7 @@ class FrankaRobot:
         action_dict = self.create_action_dict(command, action_space=action_space, gripper_action_space=gripper_action_space)
 
         self.update_joints(action_dict["joint_position"], velocity=False, blocking=blocking)
-        # self.update_gripper(action_dict["gripper_position"], velocity=False, blocking=blocking)
+        self.update_gripper(action_dict["gripper_position"], velocity=False, blocking=blocking)
 
         return action_dict
 
@@ -203,21 +203,21 @@ class FrankaRobot:
         action_dict = {"robot_state": robot_state}
         velocity = "velocity" in action_space
 
-        # if gripper_action_space is None:
-        #     gripper_action_space = "velocity" if velocity else "position"
-        # assert gripper_action_space in ["velocity", "position"]
+        if gripper_action_space is None:
+            gripper_action_space = "velocity" if velocity else "position"
+        assert gripper_action_space in ["velocity", "position"]
             
 
-        # if gripper_action_space == "velocity":
-        #     action_dict["gripper_velocity"] = action[-1]
-        #     gripper_delta = self._ik_solver.gripper_velocity_to_delta(action[-1])
-        #     gripper_position = robot_state["gripper_position"] + gripper_delta
-        #     action_dict["gripper_position"] = float(np.clip(gripper_position, 0, 1))
-        # else:
-        #     action_dict["gripper_position"] = float(np.clip(action[-1], 0, 1))
-        #     gripper_delta = action_dict["gripper_position"] - robot_state["gripper_position"]
-        #     gripper_velocity = self._ik_solver.gripper_delta_to_velocity(gripper_delta)
-        #     action_dict["gripper_delta"] = gripper_velocity
+        if gripper_action_space == "velocity":
+            action_dict["gripper_velocity"] = action[-1]
+            gripper_delta = self._ik_solver.gripper_velocity_to_delta(action[-1])
+            gripper_position = robot_state["gripper_position"] + gripper_delta
+            action_dict["gripper_position"] = float(np.clip(gripper_position, 0, 1))
+        else:
+            action_dict["gripper_position"] = float(np.clip(action[-1], 0, 1))
+            gripper_delta = action_dict["gripper_position"] - robot_state["gripper_position"]
+            gripper_velocity = self._ik_solver.gripper_delta_to_velocity(gripper_delta)
+            action_dict["gripper_delta"] = gripper_velocity
 
         if "cartesian" in action_space:
             if velocity:

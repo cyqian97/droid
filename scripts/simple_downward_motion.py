@@ -3,35 +3,28 @@
 Simple downward motion policy for Franka FR3.
 Demonstrates basic robot control: moves gripper down by 1mm per command at 25Hz.
 
-This script shows how the control pipeline works:
-  Cartesian position → IK (server-side) → Joint position → Robot control
-
 Usage:
-    python scripts/simple_downward_motion.py                    # Default: 100 steps, 25Hz
-    python scripts/simple_downward_motion.py --steps 50          # Custom step count
-    python scripts/simple_downward_motion.py --hz 10             # Custom frequency
-    python scripts/simple_downward_motion.py --step_size 2.0     # 2mm per step
-    python scripts/simple_downward_motion.py --min_z 0.05        # Lower safety limit
-    python scripts/simple_downward_motion.py --no_reset          # Skip robot reset
+    python scripts/simple_downward_motion.py                              # Default: velocity control
+    python scripts/simple_downward_motion.py --action_space cartesian_position  # Position control
+    python scripts/simple_downward_motion.py --steps 50                   # Custom step count
+    python scripts/simple_downward_motion.py --hz 10                      # Custom frequency
+    python scripts/simple_downward_motion.py --step_size 2.0              # 2mm per step
+    python scripts/simple_downward_motion.py --min_z 0.05                 # Lower safety limit
+    python scripts/simple_downward_motion.py --no_reset                   # Skip robot reset
 
 Controls:
     Ctrl+C : Emergency stop
 """
 
 import argparse
-import os
 import signal
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 import numpy as np
 
 from droid.misc.parameters import nuc_ip
 from droid.misc.server_interface import ServerInterface
-
-# Thread pool for non-blocking RPC calls with timeout
-_executor = ThreadPoolExecutor(max_workers=2)
 
 
 def main():
@@ -42,6 +35,13 @@ def main():
     parser.add_argument("--step_size", type=float, default=1.0, help="Downward movement per step in mm (default: 1.0)")
     parser.add_argument("--min_z", type=float, default=0.1, help="Minimum z-height safety limit in meters (default: 0.1)")
     parser.add_argument("--no_reset", action="store_true", help="Skip robot reset to home position")
+    parser.add_argument(
+        "--action_space",
+        type=str,
+        default="cartesian_velocity",
+        choices=["cartesian_velocity", "cartesian_position"],
+        help="Control mode (default: cartesian_velocity)",
+    )
     args = parser.parse_args()
 
     # Parameters
@@ -51,6 +51,7 @@ def main():
     num_steps = args.steps
     step_size_m = args.step_size / 1000.0  # Convert mm to meters
     min_z = args.min_z
+    action_space = args.action_space
 
     # Handle Ctrl+C gracefully
     running = True
@@ -115,6 +116,7 @@ def main():
     print("=" * 60)
     print("MOTION PLAN")
     print("=" * 60)
+    print(f"  Action space: {action_space}")
     print(f"  Control frequency: {control_hz} Hz")
     print(f"  Number of steps: {num_steps}")
     print(f"  Step size: {args.step_size} mm")
@@ -138,37 +140,45 @@ def main():
     print()
 
     # === Step 4: Main control loop ===
-    # create_action_dict expects 7D action: [x, y, z, roll, pitch, yaw, gripper]
-    # It strips the last element with action[:-1] to get the 6D pose.
-    # Append gripper=0 (no gripper change) so the pose isn't truncated.
-    target_pose = np.append(initial_pose.copy(), 0.0)
     step_count = 0
+    estimated_z = initial_pose[2]
+
+    if action_space == "cartesian_velocity":
+        # Velocity action: [vx, vy, vz, wx, wy, wz, gripper] normalized to [-1, 1]
+        # IK solver scales velocity by max_lin_delta (0.075m) to get delta per step.
+        # vz = step_size_m / max_lin_delta gives exactly step_size_m per step.
+        max_lin_delta = 0.075  # from RobotIKSolver
+        vz = -step_size_m * control_hz / max_lin_delta  # negative = downward
+        
+        action = np.array([0.0, 0.0, vz, 0.0, 0.0, 0.0, 0.0])
+    else:
+        # Position action: [x, y, z, roll, pitch, yaw, gripper]
+        # Append gripper=0 so action[:-1] gives the full 6D pose.
+        action = np.append(initial_pose.copy(), 0.0)
 
     print("=" * 60)
     print("EXECUTING DOWNWARD MOTION")
+    if action_space == "cartesian_velocity":
+        print(f"Z velocity: {vz:.3f} m/s (velocity control)" )
     print("=" * 60)
 
     while running and step_count < num_steps:
         loop_start = time.time()
 
-        # Decrement z-position by step_size
-        target_pose[2] -= step_size_m
-
-        # Safety check
-        if target_pose[2] < min_z:
-            print(f"\n[SAFETY] z-height limit reached ({target_pose[2]:.3f}m < {min_z}m)")
+        # Update estimated z and safety check
+        estimated_z -= step_size_m
+        if estimated_z < min_z:
+            print(f"\n[SAFETY] z-height limit reached ({estimated_z:.3f}m < {min_z}m)")
             print(f"Stopping at step {step_count} of {num_steps}")
             break
 
+        # For position control, update target z each step
+        if action_space == "cartesian_position":
+            action[2] -= step_size_m
+
         # Send command (IK happens server-side in create_action_dict)
-        # The server converts cartesian_position to joint_position using velocity-based IK
-        # See droid/franka/robot.py lines 219-236 for the conversion
         try:
-            robot.update_command(
-                target_pose,
-                action_space="cartesian_position",
-                blocking=False
-            )
+            robot.update_command(action, action_space=action_space, blocking=False)
         except Exception as e:
             print(f"\n[ERROR] Failed to send command: {e}")
             print("Stopping motion.")
@@ -188,7 +198,7 @@ def main():
         # Print status (update same line)
         sys.stdout.write(
             f"\r[Step {step_count:>4}/{num_steps}] "
-            f"z={target_pose[2]:>.4f}m | "
+            f"z={estimated_z:>.4f}m | "
             f"Hz={actual_hz:>5.1f} | "
             f"Moved: {step_count * args.step_size:>6.1f}mm    "
         )
@@ -199,9 +209,10 @@ def main():
     print("=" * 60)
     print("MOTION COMPLETE")
     print("=" * 60)
+    print(f"  Action space: {action_space}")
     print(f"  Steps completed: {step_count} / {num_steps}")
     print(f"  Total downward movement: {step_count * args.step_size:.1f} mm ({step_count * step_size_m:.4f} m)")
-    print(f"  Final z-height: {target_pose[2]:.4f} m")
+    print(f"  Final z-height (estimated): {estimated_z:.4f} m")
     print(f"  Initial z-height: {initial_pose[2]:.4f} m")
     print(f"  Duration: {(step_count / control_hz):.2f} seconds")
     print("=" * 60)
