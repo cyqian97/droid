@@ -31,8 +31,8 @@ def main():
     parser = argparse.ArgumentParser(description="Simple FR3 downward motion policy")
     parser.add_argument("--ip", type=str, default=None, help="NUC IP address (default: from parameters.py)")
     parser.add_argument("--hz", type=int, default=25, help="Control frequency in Hz (default: 25)")
-    parser.add_argument("--steps", type=int, default=100, help="Number of downward steps (default: 100)")
-    parser.add_argument("--step_size", type=float, default=1.0, help="Downward movement per step in mm (default: 1.0)")
+    parser.add_argument("--steps", type=int, default=200, help="Number of downward steps (default: 100)")
+    parser.add_argument("--step_size", type=float, default=0.25, help="Downward movement per step in mm (default: 1.0)")
     parser.add_argument("--min_z", type=float, default=0.1, help="Minimum z-height safety limit in meters (default: 0.1)")
     parser.add_argument("--no_reset", action="store_true", help="Skip robot reset to home position")
     parser.add_argument(
