@@ -162,6 +162,9 @@ def main():
         print(f"Z velocity: {vz:.3f} m/s (velocity control)" )
     print("=" * 60)
 
+    rpc_times = []
+    slow_steps = []
+
     while running and step_count < num_steps:
         loop_start = time.time()
 
@@ -178,7 +181,12 @@ def main():
 
         # Send command (IK happens server-side in create_action_dict)
         try:
+            rpc_start = time.time()
             robot.update_command(action, action_space=action_space, blocking=False)
+            rpc_elapsed = time.time() - rpc_start
+            rpc_times.append(rpc_elapsed)
+            if rpc_elapsed > loop_period * 2:
+                slow_steps.append((step_count, rpc_elapsed))
         except Exception as e:
             print(f"\n[ERROR] Failed to send command: {e}")
             print("Stopping motion.")
@@ -200,7 +208,7 @@ def main():
             f"\r[Step {step_count:>4}/{num_steps}] "
             f"z={estimated_z:>.4f}m | "
             f"Hz={actual_hz:>5.1f} | "
-            f"Moved: {step_count * args.step_size:>6.1f}mm    "
+            f"RPC: {rpc_elapsed*1000:>6.1f}ms    "
         )
         sys.stdout.flush()
 
@@ -215,6 +223,24 @@ def main():
     print(f"  Final z-height (estimated): {estimated_z:.4f} m")
     print(f"  Initial z-height: {initial_pose[2]:.4f} m")
     print(f"  Duration: {(step_count / control_hz):.2f} seconds")
+    print()
+    if rpc_times:
+        rpc_arr = np.array(rpc_times) * 1000  # convert to ms
+        print("  RPC TIMING DIAGNOSTICS:")
+        print(f"    Mean:   {rpc_arr.mean():>8.1f} ms")
+        print(f"    Median: {np.median(rpc_arr):>8.1f} ms")
+        print(f"    Min:    {rpc_arr.min():>8.1f} ms")
+        print(f"    Max:    {rpc_arr.max():>8.1f} ms")
+        print(f"    Std:    {rpc_arr.std():>8.1f} ms")
+        print(f"    Target: {loop_period*1000:>8.1f} ms ({control_hz} Hz)")
+        if slow_steps:
+            print(f"    Slow steps (>{loop_period*2*1000:.0f}ms): {len(slow_steps)}/{len(rpc_times)}")
+            for step, t in slow_steps[:10]:
+                print(f"      Step {step}: {t*1000:.1f} ms")
+            if len(slow_steps) > 10:
+                print(f"      ... and {len(slow_steps)-10} more")
+        else:
+            print(f"    Slow steps: 0 (all within budget)")
     print("=" * 60)
 
 

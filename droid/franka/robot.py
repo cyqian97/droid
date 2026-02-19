@@ -8,7 +8,7 @@ import torch
 from polymetis import GripperInterface, RobotInterface
 
 from droid.misc.parameters import sudo_password
-from droid.misc.subprocess_utils import run_terminal_command, run_threaded_command
+from droid.misc.subprocess_utils import run_terminal_command
 
 # UTILITY SPECIFIC IMPORTS
 from droid.misc.transformations import add_poses, euler_to_quat, pose_diff, quat_to_euler
@@ -87,23 +87,6 @@ class FrankaRobot:
             joint_delta = self._ik_solver.joint_velocity_to_delta(command)
             command = joint_delta + self._robot.get_joint_positions()
 
-        def helper_non_blocking():
-            if not self._robot.is_running_policy():
-                self._controller_not_loaded = True
-                self._robot.start_cartesian_impedance()
-                timeout = time.time() + 5
-                while not self._robot.is_running_policy():
-                    time.sleep(0.01)
-                    if time.time() > timeout:
-                        self._robot.start_cartesian_impedance()
-                        timeout = time.time() + 5
-
-                self._controller_not_loaded = False
-            try:
-                self._robot.update_desired_joint_positions(command)
-            except grpc.RpcError:
-                pass
-
         if blocking:
             if self._robot.is_running_policy():
                 self._robot.terminate_current_policy()
@@ -115,8 +98,15 @@ class FrankaRobot:
 
             self._robot.start_cartesian_impedance()
         else:
-            if not self._controller_not_loaded:
-                run_threaded_command(helper_non_blocking)
+            if not self._robot.is_running_policy():
+                print("[SERVER DEBUG] Policy not running — restarting controller...")
+                restart_start = time.time()
+                self._robot.start_cartesian_impedance()
+                print(f"[SERVER DEBUG] Controller restarted in {(time.time()-restart_start)*1000:.0f}ms")
+            try:
+                self._robot.update_desired_joint_positions(command)
+            except grpc.RpcError as e:
+                print(f"[SERVER DEBUG] update_desired_joint_positions failed: {e}")
 
     def update_gripper(self, command, velocity=True, blocking=False):
         if velocity:
