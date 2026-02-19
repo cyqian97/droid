@@ -26,7 +26,7 @@ import time
 import numpy as np
 
 # ── Import FrankaDirectClient ─────────────────────────────────────────────────
-REPO_ROOT = os.path.join(os.path.dirname(__file__), "..")
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 sys.path.insert(0, os.path.join(REPO_ROOT, "franka_direct", "python"))
 
 try:

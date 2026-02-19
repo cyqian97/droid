@@ -19,6 +19,7 @@ services:
       - ${DOCKER_XAUTH}:${DOCKER_XAUTH}
       - ${ROOT_DIR}/droid:/app/droid              # <-- Add this line
       - ${ROOT_DIR}/scripts:/app/scripts          # <-- Add this line
+      - ${ROOT_DIR}/franka_direct:/app/franka_direct
       - ${ROOT_DIR}/droid/misc/parameters.py:/app/droid/misc/parameters.py
       - ${ROOT_DIR}/droid/calibration/calibration_info.json:/app/droid/calibration/calibration_info.json
       - ${ROOT_DIR}/data:/app/data

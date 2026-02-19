@@ -148,23 +148,17 @@ int main(int argc, char** argv) {
         {{40,40,40,40,40,40,40}}, {{40,40,40,40,40,40,40}},
         {{40,40,40,40,40,40}},    {{40,40,40,40,40,40}});
 
-    // ── Seed target pose from current commanded EE pose ─────────────────────
-    {
-        franka::RobotState rs = robot.readOnce();
-        std::lock_guard<std::mutex> lk(state.mtx);
-        state.target_pose  = rs.O_T_EE_d;  // use commanded, not measured
-        state.current_pose = rs.O_T_EE;
-        state.current_q    = rs.q;
-        state.ready        = true;
-        std::cout << "[franka_server] Initial EE z = " << rs.O_T_EE[14] << " m" << std::endl;
-    }
-
     // ── libfranka Cartesian pose control loop (with auto-recovery) ──────────
     //
     // The callback runs at 1 kHz and only reads/writes shared memory — no
     // gRPC calls inside.  This keeps the callback well within the 1 ms budget.
     //
+    // target_pose is seeded from the FIRST callback invocation (not readOnce)
+    // so there is no stale-pose discontinuity at startup.  ready is set only
+    // after that first call so the Python client cannot send targets early.
+    //
     while (!state.stop) {
+        bool control_initialized = false;
         try {
             robot.control(
                 [&](const franka::RobotState& rs,
@@ -172,9 +166,19 @@ int main(int argc, char** argv) {
                 {
                     std::lock_guard<std::mutex> lk(state.mtx);
 
+                    // First callback: initialize target from robot's exact
+                    // current commanded pose and mark server as ready.
+                    if (!control_initialized) {
+                        state.target_pose = rs.O_T_EE_d;
+                        state.ready = true;
+                        control_initialized = true;
+                        std::cout << "[franka_server] Control loop started. EE z = "
+                                  << rs.O_T_EE[14] << " m" << std::endl;
+                    }
+
                     // Update telemetry (visible to gRPC GetRobotState)
-                    state.current_pose    = rs.O_T_EE;
-                    state.current_q       = rs.q;
+                    state.current_pose     = rs.O_T_EE;
+                    state.current_q        = rs.q;
                     state.cmd_success_rate = rs.control_command_success_rate;
 
                     // Finish motion if stop requested
@@ -194,6 +198,10 @@ int main(int argc, char** argv) {
         } catch (const franka::ControlException& e) {
             std::cerr << "[franka_server] Control exception: " << e.what() << std::endl;
             // Attempt automatic error recovery (mirrors franka_panda_client behavior)
+            {
+                std::lock_guard<std::mutex> lk(state.mtx);
+                state.ready = false;  // block Python client until re-initialized
+            }
             try {
                 robot.automaticErrorRecovery();
                 std::cerr << "[franka_server] Recovered from error, resuming control." << std::endl;
