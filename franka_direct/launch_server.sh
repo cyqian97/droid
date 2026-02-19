@@ -4,7 +4,7 @@
 #
 # Run from the host:
 #   docker exec <container> bash /app/droid/franka_direct/launch_server.sh
-set -euo pipefail
+set -eo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BINARY="${SCRIPT_DIR}/build/franka_server"

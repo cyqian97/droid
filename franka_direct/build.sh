@@ -2,7 +2,7 @@
 # Build franka_server inside the Docker container.
 # Run from the host:
 #   docker exec <container> bash /app/droid/franka_direct/build.sh
-set -euo pipefail
+set -eo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="${SCRIPT_DIR}/build"
