@@ -192,6 +192,15 @@ def main():
             print("Stopping motion.")
             break
 
+        # Read server-side 1kHz controller latency
+        try:
+            state_dict, _ = robot.get_robot_state()
+            ctrl_latency = state_dict.get("prev_controller_latency_ms", -1)
+            cmd_success = state_dict.get("prev_command_successful", None)
+        except Exception:
+            ctrl_latency = -1
+            cmd_success = None
+
         step_count += 1
 
         # Regulate frequency
@@ -208,7 +217,9 @@ def main():
             f"\r[Step {step_count:>4}/{num_steps}] "
             f"z={estimated_z:>.4f}m | "
             f"Hz={actual_hz:>5.1f} | "
-            f"RPC: {rpc_elapsed*1000:>6.1f}ms    "
+            f"RPC: {rpc_elapsed*1000:>6.1f}ms | "
+            f"1kHz: {ctrl_latency:>5.2f}ms | "
+            f"cmd_ok={cmd_success}    "
         )
         sys.stdout.flush()
 

@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package franka_control;
+
+service FrankaControl {
+    // Set the desired EE Cartesian pose (O_T_EE, 16 doubles col-major)
+    rpc SetCartesianTarget (CartesianTarget) returns (CommandResult);
+    // Read current robot state
+    rpc GetRobotState (Empty) returns (RobotState);
+    // Stop the control loop gracefully
+    rpc Stop (Empty) returns (CommandResult);
+}
+
+message Empty {}
+
+message CartesianTarget {
+    // 16 doubles: column-major 4x4 homogeneous transform O_T_EE
+    // Translation: indices 12 (x), 13 (y), 14 (z)
+    repeated double pose = 1;
+}
+
+message RobotState {
+    repeated double pose = 1;           // O_T_EE col-major (16 doubles)
+    repeated double q    = 2;           // joint positions (7 doubles)
+    double cmd_success_rate = 3;        // libfranka control_command_success_rate
+    bool   ready            = 4;        // true once control loop is running
+    string error            = 5;        // non-empty if fatal error
+}
+
+message CommandResult {
+    bool   success = 1;
+    string message = 2;
+}
