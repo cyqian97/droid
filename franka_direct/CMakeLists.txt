@@ -26,14 +26,16 @@ message(STATUS "grpc_cpp_plugin: ${GRPC_CPP_PLUGIN}")
 # Try the polymetis third-party build first, then fall back to system install.
 set(POLYMETIS_ROOT /app/droid/fairo/polymetis/polymetis)
 
+set(FRANKA_BASE ${POLYMETIS_ROOT}/src/clients/franka_panda_client/third_party/libfranka)
+
 set(FRANKA_INCLUDE_HINTS
-    ${POLYMETIS_ROOT}/src/clients/franka_panda_client/third_party/libfranka/include
+    ${FRANKA_BASE}/include
     ${CONDA_ENV}/include
     /usr/local/include
 )
 
 set(FRANKA_LIB_HINTS
-    ${POLYMETIS_ROOT}/build/franka_panda_client/third_party/libfranka
+    ${FRANKA_BASE}/build          # in-source build location
     ${CONDA_ENV}/lib
     /usr/local/lib
     /usr/lib
