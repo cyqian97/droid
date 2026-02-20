@@ -26,6 +26,7 @@
 #include <cmath>
 #include <csignal>
 #include <cstring>
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -167,10 +168,6 @@ int main(int argc, char** argv) {
     franka::Robot robot(robot_ip);
     std::cout << "[franka_server] Connected." << std::endl;
 
-    robot.setCollisionBehavior(
-        {{40,40,40,40,40,40,40}}, {{40,40,40,40,40,40,40}},
-        {{40,40,40,40,40,40}},    {{40,40,40,40,40,40}});
-
     // ── libfranka Cartesian pose control loop (with auto-recovery) ──────────
     //
     // The callback runs at 1 kHz.  It does NOT call gRPC — it only reads
@@ -185,6 +182,17 @@ int main(int argc, char** argv) {
     //
     while (!state.stop) {
         bool control_initialized = false;
+
+        // Re-apply robot settings before every robot.control() call.
+        // automaticErrorRecovery() resets these to factory defaults, so they
+        // must be set again on each outer-loop iteration.
+        // NOTE: these must be set before robot.control(), never inside the
+        // 1 kHz callback (per libfranka documentation).
+        robot.setCollisionBehavior(
+            {{40,40,40,40,40,40,40}}, {{40,40,40,40,40,40,40}},
+            {{40,40,40,40,40,40}},    {{40,40,40,40,40,40}});
+        robot.setJointImpedance({{3000, 3000, 3000, 2500, 2500, 2000, 2000}});
+        robot.setCartesianImpedance({{3000, 3000, 3000, 300, 300, 300}});
 
         // RT-private interpolation state — reset on each outer loop iteration.
         std::array<double, 16> interp_start{};
@@ -273,6 +281,30 @@ int main(int argc, char** argv) {
             std::cerr << "[franka_server] Control exception: " << e.what() << std::endl;
             {
                 std::lock_guard<std::mutex> lk(state.mtx);
+                const auto& cp = state.current_pose;  // O_T_EE (actual)
+                const auto& tp = interp_pose;          // last commanded (no mutex needed — RT-private)
+                const double dx = tp[12] - cp[12];
+                const double dy = tp[13] - cp[13];
+                const double dz = tp[14] - cp[14];
+                const double dist_mm = std::sqrt(dx*dx + dy*dy + dz*dz) * 1000.0;
+                std::cerr << std::fixed << std::setprecision(6)
+                    << "[franka_server]   commanded (interp_pose):"
+                    << "  pos=(" << tp[12] << ", " << tp[13] << ", " << tp[14] << ")"
+                    << "  R=[" << tp[0] << "," << tp[1] << "," << tp[2] << " | "
+                               << tp[4] << "," << tp[5] << "," << tp[6] << " | "
+                               << tp[8] << "," << tp[9] << "," << tp[10] << "]"
+                    << "\n[franka_server]   actual    (O_T_EE):    "
+                    << "  pos=(" << cp[12] << ", " << cp[13] << ", " << cp[14] << ")"
+                    << "  R=[" << cp[0] << "," << cp[1] << "," << cp[2] << " | "
+                               << cp[4] << "," << cp[5] << "," << cp[6] << " | "
+                               << cp[8] << "," << cp[9] << "," << cp[10] << "]"
+                    << "\n[franka_server]   delta (cmd - actual):"
+                    << "  dpos=(" << dx << ", " << dy << ", " << dz << ")"
+                    << "  |dpos|=" << std::setprecision(3) << dist_mm << " mm"
+                    << "  interp_tick=" << interp_tick << "/" << interp_N
+                    << "  alpha=" << std::setprecision(4)
+                    << static_cast<double>(interp_tick) / interp_N
+                    << std::endl;
                 state.ready = false;
             }
             try {
