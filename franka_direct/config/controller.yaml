@@ -10,10 +10,12 @@
 # libfranka adds gravity compensation automatically — do NOT add gravity here.
 
 # Stiffness gains [N·m/rad]  — polymetis franka_hardware.yaml defaults
-kp:        [40.0, 30.0, 50.0, 25.0, 35.0, 25.0, 10.0]
+kp:        [10.0, 7.5, 12.5, 6.25, 8.25, 6.25, 2.5]
+# kp:        [40.0, 30.0, 50.0, 25.0, 35.0, 25.0, 10.0]
 
 # Damping gains  [N·m·s/rad] — polymetis franka_hardware.yaml defaults
-kd:        [ 4.0,  6.0,  5.0,  5.0,  3.0,  2.0,  1.0]
+kd:        [ 2.0,  3.0,  2.5,  5.0,  1.5,  1.0,  0.5]
+# kd:        [ 4.0,  6.0,  5.0,  5.0,  3.0,  2.0,  1.0]
 
 # Per-joint torque clamp [N·m]
 # Franka FR3/Panda: joints 1-4 = ±87 N·m, joints 5-7 = ±12 N·m
@@ -28,4 +30,4 @@ max_step:  0.001
 # Matches polymetis lpf_cutoff_frequency=100.  Smooths dq noise that would
 # otherwise drive oscillations via the Kd term.
 # Lower = smoother but slower damping response.
-lpf_cutoff: 100.0
+lpf_cutoff: 50.0
