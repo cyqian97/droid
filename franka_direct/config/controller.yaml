@@ -21,7 +21,7 @@ kd:        [ 2.0,  3.0,  2.5,  5.0,  1.5,  1.0,  0.5]
 # Franka FR3/Panda: joints 1-4 = ±87 N·m, joints 5-7 = ±12 N·m
 tau_limit: [87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0]
 
-# Interpolation: max position change per 1 kHz RT tick [rad]
+# Max position change per 1 kHz RT tick [rad]
 # 0.001 rad/tick = 1.0 rad/s.  Increase for faster tracking,
 # decrease to soften step responses.
 max_step:  0.001
@@ -30,4 +30,13 @@ max_step:  0.001
 # Matches polymetis lpf_cutoff_frequency=100.  Smooths dq noise that would
 # otherwise drive oscillations via the Kd term.
 # Lower = smoother but slower damping response.
-lpf_cutoff: 50.0
+lpf_cutoff: 100.0
+
+# Gripper grasp parameters (used when closing, i.e. width <= 0.04 m)
+# gripper_force   [N]   : finger force during grasp (Franka Hand max ~70 N)
+# gripper_eps_in  [m]   : how much narrower than target is OK (inner tolerance)
+# gripper_eps_out [m]   : how much wider  than target is OK (outer tolerance)
+# Large epsilons mean grasp() succeeds whether or not an object is present.
+gripper_force:   20.0
+gripper_eps_in:  0.08
+gripper_eps_out: 0.08
