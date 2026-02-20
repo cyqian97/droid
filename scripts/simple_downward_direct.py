@@ -49,7 +49,7 @@ def parse_args():
                    help="Control frequency in Hz (default: 25)")
     p.add_argument("--steps",    type=int,   default=2000,
                    help="Number of control steps (default: 200)")
-    p.add_argument("--step_mm",  type=float, default=0.01,
+    p.add_argument("--step_mm",  type=float, default=0.0,
                    help="Downward step size per command in mm (default: 0.25 → 50 mm total)")
     p.add_argument("--min_z",    type=float, default=0.10,
                    help="Safety lower limit for z in metres (default: 0.10)")
@@ -119,7 +119,10 @@ def main():
 
     target_pose = list(pose)        # mutable copy
     cmd_success_rates = []
-    rpc_times         = []
+    rpc_times         = []          # set_cartesian_target latency
+    get_state_times   = []          # get_robot_state latency
+    slow_steps        = []          # (step, rpc_ms) where rpc > 2× period
+    rate_dip_steps    = []          # (step, rate) where success_rate < 0.99
 
     step = 0
     try:
@@ -137,28 +140,36 @@ def main():
             # Send target
             t0 = time.monotonic()
             ok, msg = client.set_cartesian_target(target_pose)
-            rpc_times.append(time.monotonic() - t0)
+            rpc_ms = (time.monotonic() - t0) * 1000
+            rpc_times.append(rpc_ms)
+            if rpc_ms > period * 1000 * 2:
+                slow_steps.append((step + 1, rpc_ms))
 
             if not ok:
                 print(f"\n[ERROR] SetCartesianTarget failed: {msg}")
                 break
 
             # Read back for diagnostics
+            t1 = time.monotonic()
             state = client.get_robot_state()
+            get_state_times.append((time.monotonic() - t1) * 1000)
+
             if state["error"]:
                 print(f"\n[ERROR] Robot error: {state['error']}")
                 break
 
             rate = state["cmd_success_rate"]
             cmd_success_rates.append(rate)
+            if rate < 0.99:
+                rate_dip_steps.append((step + 1, rate))
 
             # Status
             sys.stdout.write(
                 f"\r[{step+1:>4}/{args.steps}] "
                 f"z_target={target_pose[14]:.4f} m | "
                 f"z_actual={state['pose'][14] if state['pose'] else 0:.4f} m | "
-                f"success_rate={rate:.2f} | "
-                f"rpc={rpc_times[-1]*1000:.1f}ms    "
+                f"rate={rate:.3f} | "
+                f"rpc={rpc_ms:.1f}ms    "
             )
             sys.stdout.flush()
 
@@ -179,16 +190,51 @@ def main():
     print(f"  Initial z:          {initial_z:.4f} m")
 
     if rpc_times:
-        print(f"\n  RPC TIMING (set_cartesian_target):")
-        print(f"    Mean:   {np.mean(rpc_times)*1000:.2f} ms")
-        print(f"    Max:    {np.max(rpc_times)*1000:.2f} ms")
-        print(f"    Target: {period*1000:.1f} ms ({args.hz} Hz)")
+        rt = np.array(rpc_times)
+        print(f"\n  SET_CARTESIAN_TARGET RPC (laptop→franka_server gRPC):")
+        print(f"    Mean:   {rt.mean():>7.2f} ms")
+        print(f"    Median: {np.median(rt):>7.2f} ms")
+        print(f"    p90:    {np.percentile(rt, 90):>7.2f} ms")
+        print(f"    p95:    {np.percentile(rt, 95):>7.2f} ms")
+        print(f"    p99:    {np.percentile(rt, 99):>7.2f} ms")
+        print(f"    Max:    {rt.max():>7.2f} ms")
+        print(f"    Target: {period*1000:>7.1f} ms ({args.hz} Hz)")
+        if slow_steps:
+            print(f"    Slow (>{period*2*1000:.0f}ms): {len(slow_steps)} steps")
+            for s, t in slow_steps[:10]:
+                print(f"      Step {s}: {t:.1f} ms")
+            if len(slow_steps) > 10:
+                print(f"      ... and {len(slow_steps)-10} more")
+        else:
+            print(f"    Slow steps: 0")
+
+    if get_state_times:
+        gs = np.array(get_state_times)
+        print(f"\n  GET_ROBOT_STATE RPC (laptop→franka_server gRPC):")
+        print(f"    Mean:   {gs.mean():>7.2f} ms")
+        print(f"    Median: {np.median(gs):>7.2f} ms")
+        print(f"    p95:    {np.percentile(gs, 95):>7.2f} ms")
+        print(f"    Max:    {gs.max():>7.2f} ms")
 
     if cmd_success_rates:
-        print(f"\n  CMD SUCCESS RATE (libfranka, from robot):")
-        print(f"    Mean:  {np.mean(cmd_success_rates):.3f}")
-        print(f"    Min:   {np.min(cmd_success_rates):.3f}")
-        print(f"    (should be > 0.95 for smooth motion)")
+        cr = np.array(cmd_success_rates)
+        print(f"\n  1kHz RT LOOP — control_command_success_rate (libfranka):")
+        print(f"    Mean:   {cr.mean():>7.3f}   (1.000 = no deadline misses)")
+        print(f"    Median: {np.median(cr):>7.3f}")
+        print(f"    p10:    {np.percentile(cr, 10):>7.3f}")
+        print(f"    Min:    {cr.min():>7.3f}")
+        if rate_dip_steps:
+            print(f"    Dips <0.99: {len(rate_dip_steps)} steps")
+            for s, r in rate_dip_steps[:10]:
+                slow_near = [t for st, t in slow_steps if abs(st - s) <= 2]
+                note = f"  ← near slow RPC ({slow_near[0]:.0f}ms)" if slow_near else ""
+                print(f"      Step {s}: rate={r:.3f}{note}")
+            if len(rate_dip_steps) > 10:
+                print(f"      ... and {len(rate_dip_steps)-10} more")
+        else:
+            print(f"    Dips <0.99: 0  (RT loop ran clean throughout)")
+        print(f"    NOTE: franka_direct puts gRPC OUTSIDE the 1kHz loop.")
+        print(f"          Compare to Polymetis: ~0.48 with gRPC inside the loop.")
 
     client.stop()
     client.close()
