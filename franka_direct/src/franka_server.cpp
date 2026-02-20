@@ -1,7 +1,7 @@
 // franka_server.cpp
 //
 // Lightweight gRPC server that drives a Franka robot with libfranka's
-// joint position controller.
+// torque controller.
 //
 // Architecture:
 //   - Main thread:   libfranka robot.control() 1 kHz RT loop (no gRPC inside)
@@ -17,22 +17,27 @@
 //   5. On ControlException: automaticErrorRecovery(), then WAIT for a new
 //      SetJointTarget before re-entering robot.control().
 //
-// Interpolation (ticks_remaining scheme):
-//   RT-private state per robot.control() call:
-//     interp_q       – current commanded position (seeded from readOnce)
-//     last_goal_seq  – detects new 25 Hz commands via goal_seq change
-//     ticks_remaining – ticks left in current 25 Hz command period
+// Torque control — matches polymetis DefaultController algorithm:
 //
-//   On new goal (goal_seq changes):
-//     ticks_remaining = interp_N
+//   At each 1 kHz tick:
 //
-//   Each 1 kHz tick:
-//     step = (goal_q - interp_q) / ticks_remaining   ← constant per period
-//     step = clamp(step, -max_step, +max_step)        ← hard velocity cap
-//     interp_q += step
-//     --ticks_remaining
+//     interp_q tracks goal_q via linear interpolation (same as before):
+//       step = (goal_q - interp_q) / ticks_remaining
+//       step = clamp(step, -max_step, +max_step)
+//       interp_q += step
 //
-//   When ticks_remaining == 0: step = 0, hold position.
+//     Joint impedance torque:
+//       τ[i] = Kp[i] × (interp_q[i] − q[i])   ← position error
+//            − Kd[i] × dq[i]                   ← velocity damping
+//            + coriolis[i]                      ← feedforward (Coriolis+centrifugal)
+//       τ[i] = clamp(τ[i], −tau_limit[i], +tau_limit[i])
+//
+//   libfranka adds gravity compensation automatically in torque control mode,
+//   so gravity is NOT included in τ (matches polymetis JointImpedanceControl).
+//
+//   Gains match polymetis franka_hardware.yaml defaults:
+//     Kp = [40, 30, 50, 25, 35, 25, 10]  N⋅m/rad
+//     Kd = [ 4,  6,  5,  5,  3,  2,  1]  N⋅m⋅s/rad
 //
 // Usage:
 //   ./franka_server <robot_ip> <grpc_listen_addr> [policy_hz]
@@ -53,6 +58,7 @@
 #include <thread>
 
 #include <franka/exception.h>
+#include <franka/model.h>
 #include <franka/robot.h>
 
 #include <grpcpp/grpcpp.h>
@@ -77,7 +83,7 @@ struct SharedState {
     // Written by RT loop (or readOnce init); read by gRPC GetRobotState.
     std::array<double, 16> current_pose{};  // O_T_EE — actual measured pose
     std::array<double, 7>  current_q{};     // actual measured joint positions
-    std::array<double, 7>  target_q{};      // current velocity-limited command
+    std::array<double, 7>  target_q{};      // current interpolated command
     double cmd_success_rate{0.0};
     bool   ready{false};
     std::string error{};
@@ -106,7 +112,7 @@ public:
                 s_.goal_q[i] = req->q(i);
             ++s_.goal_seq;
         }
-        s_.goal_cv.notify_one();  // wake up wait_for_goal
+        s_.goal_cv.notify_one();
         rep->set_success(true);
         return Status::OK;
     }
@@ -117,8 +123,6 @@ public:
         std::lock_guard<std::mutex> lk(s_.mtx);
         for (double v : s_.current_pose) rep->add_pose(v);
         for (double v : s_.current_q)    rep->add_q(v);
-        // target_q = current velocity-limited command, use as baseline for
-        // the next SetJointTarget call to avoid large jumps.
         for (double v : s_.target_q)     rep->add_target_q(v);
         rep->set_cmd_success_rate(s_.cmd_success_rate);
         rep->set_ready(s_.ready);
@@ -130,7 +134,7 @@ public:
                 const franka_control::Empty*,
                 franka_control::CommandResult* rep) override {
         s_.stop = true;
-        s_.goal_cv.notify_all();  // wake up any wait_for_goal
+        s_.goal_cv.notify_all();
         rep->set_success(true);
         rep->set_message("Stop requested");
         return Status::OK;
@@ -162,7 +166,7 @@ void signal_handler(int) {
     std::cout << "\n[franka_server] SIGINT received, stopping..." << std::endl;
     if (g_state_ptr) {
         g_state_ptr->stop = true;
-        g_state_ptr->goal_cv.notify_all();  // wake up any wait_for_goal
+        g_state_ptr->goal_cv.notify_all();
     }
 }
 
@@ -176,6 +180,18 @@ int main(int argc, char** argv) {
     const int interp_N = static_cast<int>(std::round(1000.0 / policy_hz));
     constexpr double max_step = 0.001;  // rad per tick (= 1.0 rad/s)
 
+    // ── Joint impedance gains — polymetis franka_hardware.yaml defaults ──────
+    //
+    // These match the DefaultController gains used by TorchScriptedController:
+    //   Kp = default_Kq  = [40, 30, 50, 25, 35, 25, 10]  N⋅m/rad
+    //   Kd = default_Kqd = [ 4,  6,  5,  5,  3,  2,  1]  N⋅m⋅s/rad
+    const std::array<double, 7> kp = {{40.0, 30.0, 50.0, 25.0, 35.0, 25.0, 10.0}};
+    const std::array<double, 7> kd = {{ 4.0,  6.0,  5.0,  5.0,  3.0,  2.0,  1.0}};
+
+    // Torque limits per joint [N⋅m] — Franka Panda / FR3.
+    // Joints 1-4: ±87 N⋅m, joints 5-7: ±12 N⋅m.
+    const std::array<double, 7> tau_limit = {{87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0}};
+
     std::cout << "[franka_server] policy_hz=" << policy_hz
               << "  interp_N=" << interp_N << " ticks/waypoint"
               << "  max_step=" << max_step << " rad/tick" << std::endl;
@@ -188,14 +204,15 @@ int main(int argc, char** argv) {
     std::thread grpc_thread([&]() { run_grpc_server(state, grpc_addr); });
     grpc_thread.detach();
 
-    // ── Connect to robot ────────────────────────────────────────────────────
+    // ── Connect to robot and load dynamics model ────────────────────────────
     std::cout << "[franka_server] Connecting to robot at " << robot_ip << " ..." << std::endl;
     franka::Robot robot(robot_ip);
+    franka::Model model = robot.loadModel();
     std::cout << "[franka_server] Connected." << std::endl;
 
-    // Read current robot state so Python can see q/target_q before the
-    // RT loop starts.  Set ready=true so Python's wait_until_ready() returns
-    // and it can read the baseline for its first SetJointTarget command.
+    // Read initial state so Python can see current q before the RT loop starts.
+    // Set ready=true so Python's wait_until_ready() returns and reads the
+    // baseline for its first SetJointTarget command.
     {
         franka::RobotState rs0 = robot.readOnce();
         std::lock_guard<std::mutex> lk(state.mtx);
@@ -207,7 +224,6 @@ int main(int argc, char** argv) {
     }
 
     // Helper: block until goal_seq > min_seq, or stop requested.
-    // Returns true if a goal arrived, false if stop was requested.
     auto wait_for_goal = [&](uint64_t min_seq) -> bool {
         std::unique_lock<std::mutex> lk(state.mtx);
         state.goal_cv.wait(lk, [&]{
@@ -225,34 +241,25 @@ int main(int argc, char** argv) {
     }
     std::cout << "[franka_server] First command received, starting control." << std::endl;
 
-    // ── libfranka joint position control loop (with auto-recovery) ──────────
+    // ── libfranka torque control loop (with auto-recovery) ──────────────────
     while (!state.stop) {
 
         // Fresh robot state just before entering the RT loop.
         // Seed interp_q from actual position to ensure zero discontinuity.
         franka::RobotState rs0 = robot.readOnce();
 
-        // Re-apply robot settings before every robot.control() call.
-        // automaticErrorRecovery() resets these to factory defaults.
-        // NOTE: must be called before robot.control(), never inside the callback.
-        // robot.setCollisionBehavior(
-        //     {{40,40,40,40,40,40,40}}, {{40,40,40,40,40,40,40}},
-        //     {{40,40,40,40,40,40}},    {{40,40,40,40,40,40}});
-        // robot.setJointImpedance({{3000, 3000, 3000, 2500, 2500, 2000, 2000}});
-        // robot.setCartesianImpedance({{3000, 3000, 3000, 300, 300, 300}});
-
+        // Collision behavior — set before robot.control(), never inside callback.
         robot.setCollisionBehavior(
             {{20.0, 20.0, 18.0, 18.0, 16.0, 14.0, 12.0}}, {{20.0, 20.0, 18.0, 18.0, 16.0, 14.0, 12.0}},
             {{20.0, 20.0, 18.0, 18.0, 16.0, 14.0, 12.0}}, {{20.0, 20.0, 18.0, 18.0, 16.0, 14.0, 12.0}},
             {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}}, {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}},
             {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}}, {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}});
 
-
         // RT-private state — reset on each outer loop iteration.
         std::array<double, 7> interp_q = rs0.q;  // seeded from actual position
-        uint64_t last_goal_seq  = 0;              // detects new goals from Python
-        int  ticks_remaining    = 0;              // ticks left in current 25 Hz period
-        uint64_t tick           = 0;              // total ticks since control loop started
+        uint64_t last_goal_seq  = 0;
+        int  ticks_remaining    = 0;
+        uint64_t tick           = 0;
 
         // Update shared telemetry with the fresh read.
         {
@@ -271,25 +278,32 @@ int main(int argc, char** argv) {
         try {
             robot.control(
                 [&](const franka::RobotState& rs,
-                    franka::Duration) -> franka::JointPositions
+                    franka::Duration) -> franka::Torques
                 {
-                    // ── Lock shared state (minimal critical section) ───────
+                    // ── Coriolis feedforward (outside mutex — pure computation) ──
+                    //
+                    // model.coriolis(rs) = C(q, dq) · dq
+                    //   = Coriolis + centrifugal forces (no gravity).
+                    //
+                    // libfranka adds gravity compensation automatically in torque
+                    // control mode, so we only need coriolis for feedforward.
+                    // This matches polymetis JointImpedanceControl:
+                    //   τ_ff = invdyn(q, dq, 0) − invdyn(q, 0, 0)  ← coriolis only
+                    const std::array<double, 7> coriolis = model.coriolis(rs);
+
+                    // ── Lock shared state ──────────────────────────────────
                     std::lock_guard<std::mutex> lk(state.mtx);
 
-                    // ── Detect new 25 Hz command ───────────────────────────
+                    // ── Interpolate interp_q toward goal_q ────────────────
+                    //
+                    // On new 25 Hz command: reset ticks_remaining = interp_N.
+                    // step = (goal_q - interp_q) / ticks_remaining  ← constant/period
+                    // step = clamp(step, ±max_step)                 ← safety cap
                     if (state.goal_seq != last_goal_seq) {
                         last_goal_seq   = state.goal_seq;
                         ticks_remaining = interp_N;
                     }
-
-                    // ── Velocity-limited tracking toward goal_q ───────────
-                    // step = (goal_q - interp_q) / ticks_remaining
-                    //      = remaining commanded delta / remaining ticks
-                    //      = constant per 25 Hz period (linear interpolation)
-                    // Clamped to max_step to guard against large jumps.
-                    // When ticks_remaining == 0: hold position (step = 0).
                     const auto& gq = state.goal_q;
-                    // interp_q = rs.q; 
                     for (int i = 0; i < 7; ++i) {
                         double d    = gq[i] - interp_q[i];
                         double step = (ticks_remaining > 0) ? d / ticks_remaining : 0.0;
@@ -298,20 +312,35 @@ int main(int argc, char** argv) {
                     if (ticks_remaining > 0) --ticks_remaining;
                     ++tick;
 
+                    // ── Joint impedance torque (DefaultController formula) ─
+                    //
+                    //   τ[i] = Kp[i] × (interp_q[i] − q[i])   position error
+                    //        − Kd[i] × dq[i]                   velocity damping
+                    //        + coriolis[i]                      feedforward
+                    //
+                    // Clamped to hardware torque limits.
+                    std::array<double, 7> tau;
+                    for (int i = 0; i < 7; ++i) {
+                        tau[i] = kp[i] * (interp_q[i] - rs.q[i])
+                               - kd[i] * rs.dq[i]
+                               + coriolis[i];
+                        tau[i] = std::max(-tau_limit[i], std::min(tau[i], tau_limit[i]));
+                    }
+
                     // ── Update telemetry ──────────────────────────────────
                     state.current_pose     = rs.O_T_EE;
                     state.current_q        = rs.q;
                     state.cmd_success_rate = rs.control_command_success_rate;
                     state.target_q         = interp_q;
 
-                    // ── Finish motion if stop requested ───────────────────
+                    // ── Finish if stop requested ──────────────────────────
                     if (state.stop) {
-                        franka::JointPositions p(interp_q);
-                        p.motion_finished = true;
-                        return p;
+                        franka::Torques t(tau);
+                        t.motion_finished = true;
+                        return t;
                     }
 
-                    return franka::JointPositions(interp_q);
+                    return franka::Torques(tau);
                 }
             );
 
@@ -349,8 +378,6 @@ int main(int argc, char** argv) {
                 state.error = e2.what();
                 break;
             }
-            // Wait for a new command before re-entering the RT loop.
-            // Set ready=true first so Python knows it can send commands again.
             uint64_t seq_at_recovery;
             {
                 std::lock_guard<std::mutex> lk(state.mtx);
