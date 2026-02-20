@@ -250,7 +250,7 @@ int main(int argc, char** argv) {
                     //   --ticks_remaining
                     //
                     // When ticks_remaining reaches 0 (between 25 Hz commands),
-                    // hold position (step = 0).
+                    // use d as the step, which means interp_q will finally reach goal_q.
                     if (state.goal_seq != last_goal_seq) {
                         last_goal_seq   = state.goal_seq;
                         ticks_remaining = interp_N;
