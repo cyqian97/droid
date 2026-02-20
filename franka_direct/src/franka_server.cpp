@@ -50,10 +50,13 @@
 #include <condition_variable>
 #include <csignal>
 #include <cstring>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <sstream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 
@@ -69,6 +72,62 @@ using grpc::Server;
 using grpc::ServerBuilder;
 using grpc::ServerContext;
 using grpc::Status;
+
+// ── Controller config (loaded from YAML at startup) ──────────────────────────
+
+struct ControllerConfig {
+    std::array<double, 7> kp        = {{40.0, 30.0, 50.0, 25.0, 35.0, 25.0, 10.0}};
+    std::array<double, 7> kd        = {{ 4.0,  6.0,  5.0,  5.0,  3.0,  2.0,  1.0}};
+    std::array<double, 7> tau_limit = {{87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0}};
+    double max_step = 0.001;  // rad per 1 kHz tick
+};
+
+static std::string cfg_trim(const std::string& s) {
+    size_t a = s.find_first_not_of(" \t\r\n");
+    if (a == std::string::npos) return {};
+    size_t b = s.find_last_not_of(" \t\r\n");
+    return s.substr(a, b - a + 1);
+}
+
+static std::array<double, 7> parse_array7(const std::string& val) {
+    size_t lb = val.find('['), rb = val.find(']');
+    if (lb == std::string::npos || rb == std::string::npos)
+        throw std::runtime_error("Expected '[...]' for array value: " + val);
+    std::istringstream ss(val.substr(lb + 1, rb - lb - 1));
+    std::array<double, 7> arr{};
+    std::string tok;
+    int i = 0;
+    while (std::getline(ss, tok, ',') && i < 7)
+        arr[i++] = std::stod(cfg_trim(tok));
+    if (i != 7)
+        throw std::runtime_error("Expected 7 values, got " + std::to_string(i));
+    return arr;
+}
+
+static ControllerConfig load_config(const std::string& path) {
+    std::ifstream f(path);
+    if (!f.is_open())
+        throw std::runtime_error("Cannot open config file: " + path);
+    ControllerConfig cfg;
+    std::string line;
+    while (std::getline(f, line)) {
+        size_t hash = line.find('#');
+        if (hash != std::string::npos) line = line.substr(0, hash);
+        line = cfg_trim(line);
+        if (line.empty()) continue;
+        size_t colon = line.find(':');
+        if (colon == std::string::npos) continue;
+        std::string key = cfg_trim(line.substr(0, colon));
+        std::string val = cfg_trim(line.substr(colon + 1));
+        if (val.empty()) continue;
+        if      (key == "kp")        cfg.kp        = parse_array7(val);
+        else if (key == "kd")        cfg.kd        = parse_array7(val);
+        else if (key == "tau_limit") cfg.tau_limit = parse_array7(val);
+        else if (key == "max_step")  cfg.max_step  = std::stod(val);
+        // unknown keys silently ignored
+    }
+    return cfg;
+}
 
 // ── Shared state between gRPC threads and the RT control loop ──────────────
 
@@ -173,28 +232,42 @@ void signal_handler(int) {
 // ── Main ────────────────────────────────────────────────────────────────────
 
 int main(int argc, char** argv) {
-    const std::string robot_ip  = (argc > 1) ? argv[1] : "192.168.1.11";
-    const std::string grpc_addr = (argc > 2) ? argv[2] : "0.0.0.0:50052";
-    const double      policy_hz = (argc > 3) ? std::stod(argv[3]) : 25.0;
+    const std::string robot_ip   = (argc > 1) ? argv[1] : "192.168.1.11";
+    const std::string grpc_addr  = (argc > 2) ? argv[2] : "0.0.0.0:50052";
+    const double      policy_hz  = (argc > 3) ? std::stod(argv[3]) : 25.0;
+    const std::string config_path = (argc > 4) ? argv[4] : "";
 
     const int interp_N = static_cast<int>(std::round(1000.0 / policy_hz));
-    constexpr double max_step = 0.001;  // rad per tick (= 1.0 rad/s)
 
-    // ── Joint impedance gains — polymetis franka_hardware.yaml defaults ──────
-    //
-    // These match the DefaultController gains used by TorchScriptedController:
-    //   Kp = default_Kq  = [40, 30, 50, 25, 35, 25, 10]  N⋅m/rad
-    //   Kd = default_Kqd = [ 4,  6,  5,  5,  3,  2,  1]  N⋅m⋅s/rad
-    const std::array<double, 7> kp = {{40.0, 30.0, 50.0, 25.0, 35.0, 25.0, 10.0}};
-    const std::array<double, 7> kd = {{ 4.0,  6.0,  5.0,  5.0,  3.0,  2.0,  1.0}};
+    // ── Load controller parameters from YAML (or use built-in defaults) ──────
+    ControllerConfig cfg;
+    if (!config_path.empty()) {
+        try {
+            cfg = load_config(config_path);
+            std::cout << "[franka_server] Loaded config: " << config_path << std::endl;
+        } catch (const std::exception& e) {
+            std::cerr << "[franka_server] Config error: " << e.what() << std::endl;
+            return 1;
+        }
+    } else {
+        std::cout << "[franka_server] No config file specified — using built-in defaults." << std::endl;
+    }
 
-    // Torque limits per joint [N⋅m] — Franka Panda / FR3.
-    // Joints 1-4: ±87 N⋅m, joints 5-7: ±12 N⋅m.
-    const std::array<double, 7> tau_limit = {{87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0}};
+    const auto&   kp        = cfg.kp;
+    const auto&   kd        = cfg.kd;
+    const auto&   tau_limit = cfg.tau_limit;
+    const double  max_step  = cfg.max_step;
 
     std::cout << "[franka_server] policy_hz=" << policy_hz
               << "  interp_N=" << interp_N << " ticks/waypoint"
-              << "  max_step=" << max_step << " rad/tick" << std::endl;
+              << "  max_step=" << max_step << " rad/tick\n"
+              << "[franka_server] Kp:        [";
+    for (int i = 0; i < 7; ++i) std::cout << kp[i] << (i<6?", ":"");
+    std::cout << "]\n[franka_server] Kd:        [";
+    for (int i = 0; i < 7; ++i) std::cout << kd[i] << (i<6?", ":"");
+    std::cout << "]\n[franka_server] tau_limit: [";
+    for (int i = 0; i < 7; ++i) std::cout << tau_limit[i] << (i<6?", ":"");
+    std::cout << "]" << std::endl;
 
     SharedState state;
     g_state_ptr = &state;

@@ -1,0 +1,25 @@
+# franka_server controller parameters
+# Edit this file and restart franka_server to apply changes (no rebuild needed).
+#
+# Joint impedance controller formula (matches polymetis DefaultController):
+#   tau[i] = Kp[i] * (interp_q[i] - q[i])   <- position error
+#          - Kd[i] * dq[i]                   <- velocity damping
+#          + coriolis[i]                      <- feedforward
+#   tau[i] = clamp(tau[i], -tau_limit[i], tau_limit[i])
+#
+# libfranka adds gravity compensation automatically — do NOT add gravity here.
+
+# Stiffness gains [N·m/rad]  — polymetis franka_hardware.yaml defaults
+kp:        [40.0, 30.0, 50.0, 25.0, 35.0, 25.0, 10.0]
+
+# Damping gains  [N·m·s/rad] — polymetis franka_hardware.yaml defaults
+kd:        [ 4.0,  6.0,  5.0,  5.0,  3.0,  2.0,  1.0]
+
+# Per-joint torque clamp [N·m]
+# Franka FR3/Panda: joints 1-4 = ±87 N·m, joints 5-7 = ±12 N·m
+tau_limit: [87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0]
+
+# Interpolation: max position change per 1 kHz RT tick [rad]
+# 0.001 rad/tick = 1.0 rad/s.  Increase for faster tracking,
+# decrease to soften step responses.
+max_step:  0.001

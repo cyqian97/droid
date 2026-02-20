@@ -12,6 +12,7 @@ BINARY="${SCRIPT_DIR}/build/franka_server"
 ROBOT_IP="${ROBOT_IP:-192.168.1.11}"
 GRPC_ADDR="${GRPC_ADDR:-0.0.0.0:50052}"
 POLICY_HZ="${POLICY_HZ:-25}"
+CONFIG_FILE="${CONFIG_FILE:-${SCRIPT_DIR}/config/controller.yaml}"
 
 if [ ! -f "${BINARY}" ]; then
     echo "[ERROR] Binary not found: ${BINARY}"
@@ -32,5 +33,5 @@ conda activate polymetis-local
 find /root/miniconda3 -type d -name "lib" | sudo tee /etc/ld.so.conf.d/conda-polymetis.conf > /dev/null
 sudo ldconfig
 
-echo "[franka_server] Starting: robot_ip=${ROBOT_IP}  grpc=${GRPC_ADDR}  policy_hz=${POLICY_HZ}"
-exec "${BINARY}" "${ROBOT_IP}" "${GRPC_ADDR}" "${POLICY_HZ}" 2>&1 | tee /tmp/franka_direct.log
+echo "[franka_server] Starting: robot_ip=${ROBOT_IP}  grpc=${GRPC_ADDR}  policy_hz=${POLICY_HZ}  config=${CONFIG_FILE}"
+exec "${BINARY}" "${ROBOT_IP}" "${GRPC_ADDR}" "${POLICY_HZ}" "${CONFIG_FILE}" 2>&1 | tee /tmp/franka_direct.log
