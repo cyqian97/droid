@@ -164,6 +164,8 @@ def main():
 
     rpc_times = []
     slow_steps = []
+    ctrl_latencies = []   # gRPC ControlUpdate times sampled at 25 Hz
+    cmd_failures = []     # steps where prev_command_successful == False
 
     while running and step_count < num_steps:
         loop_start = time.time()
@@ -197,6 +199,10 @@ def main():
             state_dict, _ = robot.get_robot_state()
             ctrl_latency = state_dict.get("prev_controller_latency_ms", -1)
             cmd_success = state_dict.get("prev_command_successful", None)
+            if ctrl_latency >= 0:
+                ctrl_latencies.append(ctrl_latency)
+            if cmd_success is False:
+                cmd_failures.append(step_count)
         except Exception:
             ctrl_latency = -1
             cmd_success = None
@@ -237,12 +243,11 @@ def main():
     print()
     if rpc_times:
         rpc_arr = np.array(rpc_times) * 1000  # convert to ms
-        print("  RPC TIMING DIAGNOSTICS:")
+        print("  RPC TIMING (laptop→NUC ZeroRPC, includes torch.jit.script()):")
         print(f"    Mean:   {rpc_arr.mean():>8.1f} ms")
         print(f"    Median: {np.median(rpc_arr):>8.1f} ms")
-        print(f"    Min:    {rpc_arr.min():>8.1f} ms")
+        print(f"    p95:    {np.percentile(rpc_arr, 95):>8.1f} ms")
         print(f"    Max:    {rpc_arr.max():>8.1f} ms")
-        print(f"    Std:    {rpc_arr.std():>8.1f} ms")
         print(f"    Target: {loop_period*1000:>8.1f} ms ({control_hz} Hz)")
         if slow_steps:
             print(f"    Slow steps (>{loop_period*2*1000:.0f}ms): {len(slow_steps)}/{len(rpc_times)}")
@@ -252,6 +257,39 @@ def main():
                 print(f"      ... and {len(slow_steps)-10} more")
         else:
             print(f"    Slow steps: 0 (all within budget)")
+
+    if ctrl_latencies:
+        cl = np.array(ctrl_latencies)
+        budget_ms = 1.0  # libfranka 1 ms hard deadline
+        over_budget = cl[cl > budget_ms]
+        print()
+        print("  1kHz CALLBACK — gRPC ControlUpdate latency (sampled at 25 Hz):")
+        print(f"    Mean:    {cl.mean():>7.2f} ms   (+ Jacobian safety ~0.3 ms = total per callback)")
+        print(f"    Median:  {np.median(cl):>7.2f} ms")
+        print(f"    p90:     {np.percentile(cl, 90):>7.2f} ms")
+        print(f"    p95:     {np.percentile(cl, 95):>7.2f} ms")
+        print(f"    p99:     {np.percentile(cl, 99):>7.2f} ms")
+        print(f"    Max:     {cl.max():>7.2f} ms")
+        print(f"    >1ms:    {len(over_budget)}/{len(cl)} samples ({100*len(over_budget)/len(cl):.0f}%)")
+        print(f"    NOTE: checkStateLimits (Jacobian+Eigen) adds ~0.3-0.4 ms not shown here.")
+        print(f"          gRPC + safety ≈ {cl.mean()+0.35:.2f} ms mean → {100*(cl+0.35 > budget_ms).mean():.0f}% est. over deadline")
+
+    if cmd_failures:
+        print()
+        print(f"  COMMAND FAILURES (prev_command_successful=False):")
+        print(f"    Count:  {len(cmd_failures)} / {step_count} steps ({100*len(cmd_failures)/step_count:.1f}%)")
+        print(f"    Steps:  {cmd_failures[:20]}")
+        if len(cmd_failures) > 20:
+            print(f"            ... and {len(cmd_failures)-20} more")
+        # Check correlation with slow RPC steps
+        slow_step_nums = {s for s, _ in slow_steps}
+        near_slow = [f for f in cmd_failures if any(abs(f - s) <= 2 for s in slow_step_nums)]
+        if near_slow:
+            print(f"    Failures near slow RPC steps: {near_slow}")
+    else:
+        print()
+        print(f"  COMMAND FAILURES: 0 / {step_count} (all commands applied successfully)")
+
     print("=" * 60)
 
 

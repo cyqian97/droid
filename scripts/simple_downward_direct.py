@@ -49,7 +49,7 @@ def parse_args():
                    help="Control frequency in Hz (default: 25)")
     p.add_argument("--steps",    type=int,   default=2000,
                    help="Number of control steps (default: 200)")
-    p.add_argument("--step_mm",  type=float, default=0.000,
+    p.add_argument("--step_mm",  type=float, default=0.01,
                    help="Downward step size per command in mm (default: 0.25 → 50 mm total)")
     p.add_argument("--min_z",    type=float, default=0.10,
                    help="Safety lower limit for z in metres (default: 0.10)")
