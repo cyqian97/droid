@@ -36,6 +36,8 @@ class FrankaDirectClient:
             cmd_success_rate  – float in [0, 1]
             ready             – bool
             error             – str (empty if OK)
+            gripper_width     – float, actual gripper opening in metres [0, 0.08]
+            gripper_grasping  – bool, True while gripping an object
 
         Use ``target_q`` (not ``q``) as the starting point for new
         SetJointTarget calls to avoid velocity discontinuities.
@@ -48,6 +50,8 @@ class FrankaDirectClient:
             "cmd_success_rate": resp.cmd_success_rate,
             "ready":            resp.ready,
             "error":            resp.error,
+            "gripper_width":    resp.gripper_width,
+            "gripper_grasping": resp.gripper_grasping,
         }
 
     def wait_until_ready(self, timeout: float = 10.0, poll_hz: float = 5.0):
@@ -78,6 +82,21 @@ class FrankaDirectClient:
         """
         req  = pb2.JointTarget(q=list(q_7))
         resp = self.stub.SetJointTarget(req, timeout=self.timeout)
+        return resp.success, resp.message
+
+    def set_gripper_target(self, width_m: float, speed_mps: float = 0.1):
+        """
+        Set desired Franka Hand gripper opening width.
+
+        Args:
+            width_m:   target opening in metres, range [0, 0.08].
+                       0.0 = fully closed, 0.08 = fully open.
+            speed_mps: max finger speed in m/s, range [0.01, 0.2].
+        Returns:
+            (success: bool, message: str)
+        """
+        req  = pb2.GripperTarget(width=float(width_m), speed=float(speed_mps))
+        resp = self.stub.SetGripperTarget(req, timeout=self.timeout)
         return resp.success, resp.message
 
     def stop(self):

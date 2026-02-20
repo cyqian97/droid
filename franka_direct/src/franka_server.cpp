@@ -61,6 +61,7 @@
 #include <thread>
 
 #include <franka/exception.h>
+#include <franka/gripper.h>
 #include <franka/model.h>
 #include <franka/robot.h>
 
@@ -131,6 +132,85 @@ static ControllerConfig load_config(const std::string& path) {
     return cfg;
 }
 
+// ── Gripper shared state ─────────────────────────────────────────────────────
+
+struct GripperSharedState {
+    std::mutex mtx;
+    std::condition_variable cv;
+
+    // Command (written by gRPC SetGripperTarget; read by gripper thread).
+    double   desired_width{0.08};   // meters, default open
+    double   desired_speed{0.1};    // m/s
+    uint64_t cmd_seq{0};
+
+    // Telemetry (written by gripper thread; read by gRPC GetRobotState).
+    double current_width{0.08};
+    bool   is_grasping{false};
+    bool   ready{false};
+    std::string error;
+
+    std::atomic<bool> stop{false};
+};
+
+// ── Gripper thread ────────────────────────────────────────────────────────────
+//
+// Runs independently from the 1 kHz arm RT loop.
+// Executes gripper.move() calls (which are blocking) in response to
+// SetGripperTarget RPC commands.  The arm loop is never affected.
+
+void run_gripper_thread(GripperSharedState& gs, const std::string& robot_ip) {
+    try {
+        franka::Gripper gripper(robot_ip);
+        std::cout << "[franka_server] Gripper connected." << std::endl;
+
+        // Seed telemetry from current state
+        {
+            auto s = gripper.readOnce();
+            std::lock_guard<std::mutex> lk(gs.mtx);
+            gs.current_width = s.width;
+            gs.is_grasping   = s.is_grasping;
+            gs.ready         = true;
+        }
+        std::cout << "[franka_server] Gripper ready. Width = "
+                  << gripper.readOnce().width << " m" << std::endl;
+
+        uint64_t last_seq = 0;
+        while (!gs.stop) {
+            double width, speed;
+            {
+                std::unique_lock<std::mutex> lk(gs.mtx);
+                gs.cv.wait_for(lk, std::chrono::milliseconds(200), [&] {
+                    return gs.cmd_seq != last_seq || gs.stop.load();
+                });
+                if (gs.stop) break;
+                if (gs.cmd_seq == last_seq) continue;
+                width    = std::max(0.0, std::min(gs.desired_width, 0.08));
+                speed    = std::max(0.01, std::min(gs.desired_speed, 0.2));
+                last_seq = gs.cmd_seq;
+            }
+
+            try {
+                gripper.move(width, speed);
+            } catch (const franka::Exception& e) {
+                std::cerr << "[franka_server] Gripper move error: " << e.what() << std::endl;
+            }
+
+            // Refresh telemetry after move completes
+            try {
+                auto s = gripper.readOnce();
+                std::lock_guard<std::mutex> lk(gs.mtx);
+                gs.current_width = s.width;
+                gs.is_grasping   = s.is_grasping;
+            } catch (...) {}
+        }
+    } catch (const franka::Exception& e) {
+        std::cerr << "[franka_server] Gripper init failed: " << e.what()
+                  << "  (arm control continues without gripper)" << std::endl;
+        std::lock_guard<std::mutex> lk(gs.mtx);
+        gs.error = e.what();
+    }
+}
+
 // ── Shared state between gRPC threads and the RT control loop ──────────────
 
 struct SharedState {
@@ -157,7 +237,7 @@ struct SharedState {
 
 class FrankaControlImpl final : public franka_control::FrankaControl::Service {
 public:
-    explicit FrankaControlImpl(SharedState& s) : s_(s) {}
+    explicit FrankaControlImpl(SharedState& s, GripperSharedState& gs) : s_(s), gs_(gs) {}
 
     Status SetJointTarget(ServerContext*,
                           const franka_control::JointTarget* req,
@@ -178,39 +258,65 @@ public:
         return Status::OK;
     }
 
+    Status SetGripperTarget(ServerContext*,
+                            const franka_control::GripperTarget* req,
+                            franka_control::CommandResult* rep) override {
+        {
+            std::lock_guard<std::mutex> lk(gs_.mtx);
+            gs_.desired_width = std::max(0.0, std::min(req->width(), 0.08));
+            gs_.desired_speed = req->speed() > 0.0 ? req->speed() : 0.1;
+            ++gs_.cmd_seq;
+        }
+        gs_.cv.notify_one();
+        rep->set_success(true);
+        return Status::OK;
+    }
+
     Status GetRobotState(ServerContext*,
                          const franka_control::Empty*,
                          franka_control::RobotState* rep) override {
-        std::lock_guard<std::mutex> lk(s_.mtx);
-        for (double v : s_.current_pose) rep->add_pose(v);
-        for (double v : s_.current_q)    rep->add_q(v);
-        for (double v : s_.target_q)     rep->add_target_q(v);
-        rep->set_cmd_success_rate(s_.cmd_success_rate);
-        rep->set_ready(s_.ready);
-        rep->set_error(s_.error);
+        // Arm state — lock arm mutex
+        {
+            std::lock_guard<std::mutex> lk(s_.mtx);
+            for (double v : s_.current_pose) rep->add_pose(v);
+            for (double v : s_.current_q)    rep->add_q(v);
+            for (double v : s_.target_q)     rep->add_target_q(v);
+            rep->set_cmd_success_rate(s_.cmd_success_rate);
+            rep->set_ready(s_.ready);
+            rep->set_error(s_.error);
+        }
+        // Gripper state — separate mutex, never hold both at once
+        {
+            std::lock_guard<std::mutex> lk(gs_.mtx);
+            rep->set_gripper_width(gs_.current_width);
+            rep->set_gripper_grasping(gs_.is_grasping);
+        }
         return Status::OK;
     }
 
     Status Stop(ServerContext*,
                 const franka_control::Empty*,
                 franka_control::CommandResult* rep) override {
-        s_.stop = true;
+        s_.stop  = true;
+        gs_.stop = true;
         s_.goal_cv.notify_all();
+        gs_.cv.notify_all();
         rep->set_success(true);
         rep->set_message("Stop requested");
         return Status::OK;
     }
 
 private:
-    SharedState& s_;
+    SharedState&        s_;
+    GripperSharedState& gs_;
 };
 
 // ── gRPC server launcher (runs in background thread) ───────────────────────
 
 static std::unique_ptr<Server> g_server;
 
-void run_grpc_server(SharedState& state, const std::string& addr) {
-    FrankaControlImpl service(state);
+void run_grpc_server(SharedState& state, GripperSharedState& gs, const std::string& addr) {
+    FrankaControlImpl service(state, gs);
     ServerBuilder builder;
     builder.AddListeningPort(addr, grpc::InsecureServerCredentials());
     builder.RegisterService(&service);
@@ -221,13 +327,18 @@ void run_grpc_server(SharedState& state, const std::string& addr) {
 
 // ── Signal handler ──────────────────────────────────────────────────────────
 
-static SharedState* g_state_ptr = nullptr;
+static SharedState*        g_state_ptr   = nullptr;
+static GripperSharedState* g_gripper_ptr = nullptr;
 
 void signal_handler(int) {
     std::cout << "\n[franka_server] SIGINT received, stopping..." << std::endl;
     if (g_state_ptr) {
         g_state_ptr->stop = true;
         g_state_ptr->goal_cv.notify_all();
+    }
+    if (g_gripper_ptr) {
+        g_gripper_ptr->stop = true;
+        g_gripper_ptr->cv.notify_all();
     }
 }
 
@@ -277,12 +388,20 @@ int main(int argc, char** argv) {
     for (int i = 0; i < 7; ++i) std::cout << tau_limit[i] << (i<6?", ":"");
     std::cout << "]" << std::endl;
 
-    SharedState state;
-    g_state_ptr = &state;
+    SharedState        state;
+    GripperSharedState gripper_state;
+    g_state_ptr   = &state;
+    g_gripper_ptr = &gripper_state;
     std::signal(SIGINT, signal_handler);
 
+    // ── Start gripper thread ────────────────────────────────────────────────
+    // Connects to franka::Gripper independently of the arm RT loop.
+    // If the gripper is unavailable the arm still operates normally.
+    std::thread gripper_thread([&]() { run_gripper_thread(gripper_state, robot_ip); });
+    gripper_thread.detach();
+
     // ── Start gRPC server in background thread ──────────────────────────────
-    std::thread grpc_thread([&]() { run_grpc_server(state, grpc_addr); });
+    std::thread grpc_thread([&]() { run_grpc_server(state, gripper_state, grpc_addr); });
     grpc_thread.detach();
 
     // ── Connect to robot and load dynamics model ────────────────────────────

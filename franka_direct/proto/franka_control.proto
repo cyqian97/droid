@@ -4,11 +4,13 @@ package franka_control;
 
 service FrankaControl {
     // Set desired joint positions (7 doubles in radians)
-    rpc SetJointTarget (JointTarget) returns (CommandResult);
-    // Read current robot state
-    rpc GetRobotState (Empty) returns (RobotState);
+    rpc SetJointTarget   (JointTarget)   returns (CommandResult);
+    // Set desired gripper opening width
+    rpc SetGripperTarget (GripperTarget) returns (CommandResult);
+    // Read current robot + gripper state
+    rpc GetRobotState    (Empty)         returns (RobotState);
     // Stop the control loop gracefully
-    rpc Stop (Empty) returns (CommandResult);
+    rpc Stop             (Empty)         returns (CommandResult);
 }
 
 message Empty {}
@@ -18,13 +20,22 @@ message JointTarget {
     repeated double q = 1;
 }
 
+message GripperTarget {
+    // Desired opening width [m], range [0, 0.08]
+    double width = 1;
+    // Max speed [m/s], range [0.01, 0.2]; 0 → use default (0.1 m/s)
+    double speed = 2;
+}
+
 message RobotState {
-    repeated double pose         = 1;   // O_T_EE col-major (16 doubles) — actual measured pose
-    repeated double q            = 2;   // joint positions (7 doubles) — actual measured
-    double cmd_success_rate      = 3;   // libfranka control_command_success_rate
-    bool   ready                 = 4;   // true once control loop is running
-    string error                 = 5;   // non-empty if fatal error
-    repeated double target_q     = 6;   // current interpolated joint command (7 doubles)
+    repeated double pose          = 1;   // O_T_EE col-major (16 doubles) — actual measured pose
+    repeated double q             = 2;   // joint positions (7 doubles) — actual measured
+    double cmd_success_rate       = 3;   // libfranka control_command_success_rate
+    bool   ready                  = 4;   // true once arm control loop is running
+    string error                  = 5;   // non-empty if fatal error
+    repeated double target_q      = 6;   // current interpolated joint command (7 doubles)
+    double gripper_width          = 7;   // actual gripper opening [m]
+    bool   gripper_grasping       = 8;   // true while gripping an object
 }
 
 message CommandResult {

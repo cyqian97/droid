@@ -77,7 +77,7 @@ def print_status(step, enabled, hz, cartesian_pos, gripper):
         f"{'MOVING' if enabled else 'PAUSED':<7} | "
         f"Hz: {hz:>5.1f} | "
         f"z={cartesian_pos[2]:.3f}m | "
-        f"gripper={gripper:.2f}    "
+        f"gripper={gripper*100:.0f}mm    "
     )
     sys.stdout.flush()
 
@@ -179,7 +179,7 @@ def main():
     print("TELEOPERATION READY")
     print("=" * 55)
     print(f"  Hold GRIP TRIGGER    → move robot")
-    print(f"  INDEX TRIGGER        → gripper (display only)")
+    print(f"  INDEX TRIGGER        → close gripper (release to open)")
     print(f"  JOYSTICK press       → recalibrate orientation")
     print(f"  '{btn_a}'                  → stop (success)")
     print(f"  '{btn_b}'                  → stop (failure)")
@@ -191,8 +191,12 @@ def main():
     print()
 
     # === Step 6: Main control loop ============================================
-    step_count  = 0
-    gripper_pos = 0.0   # tracked locally; franka_server has no gripper output
+    step_count    = 0
+    gripper_pos   = 0.0    # integrated VRPolicy gripper signal [0, 1]
+    gripper_open  = True   # current commanded state (True = open, False = closed)
+    GRIPPER_OPEN  = 0.08   # Franka Hand max width [m]
+    GRIPPER_CLOSE = 0.0    # fully closed [m]
+    GRIPPER_SPEED = 0.1    # finger speed [m/s]
 
     # Seed target_q from current server state (after reset, this is near HOME_Q)
     init_state = client.get_robot_state()
@@ -255,7 +259,7 @@ def main():
             # RobotIKSolver is calibrated for 15 Hz (control_timestep = 1/15 s)
             ik_robot_state = {
                 "joint_positions":  target_q.tolist(),
-                "joint_velocities": [0.0] * 7,     # omit estimation; negligible effect
+                "joint_velocities": [0.0] * 7,
             }
             joint_vel   = ik_solver.cartesian_velocity_to_joint_velocity(
                 action[:6], ik_robot_state)
@@ -266,8 +270,16 @@ def main():
             client.set_joint_target(new_target_q.tolist())
             target_q = new_target_q
 
-            # Update tracked gripper state (no hardware output)
+            # ── Gripper: integrate signal, send command on state change ───────
+            # action[6] > 0 → trigger pressed (close), < 0 → released (open)
             gripper_pos = float(np.clip(gripper_pos + action[6] * 0.1, 0.0, 1.0))
+            want_closed = gripper_pos > 0.5
+            if want_closed and gripper_open:
+                client.set_gripper_target(GRIPPER_CLOSE, GRIPPER_SPEED)
+                gripper_open = False
+            elif not want_closed and not gripper_open:
+                client.set_gripper_target(GRIPPER_OPEN, GRIPPER_SPEED)
+                gripper_open = True
 
         # ── Regulate frequency ────────────────────────────────────────────────
         elapsed = time.time() - loop_start
@@ -277,7 +289,7 @@ def main():
 
         actual_hz = 1.0 / max(time.time() - loop_start, 1e-6)
         print_status(step_count, info["movement_enabled"], actual_hz,
-                     cartesian_pos, gripper_pos)
+                     cartesian_pos, state["gripper_width"])
 
     # === Cleanup ==============================================================
     print("\nTeleoperation ended.")
