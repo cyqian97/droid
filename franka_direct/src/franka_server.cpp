@@ -8,20 +8,31 @@
 //   - gRPC threads:  handle SetJointTarget / GetRobotState at any rate
 //   - Shared state:  a mutex-protected struct exchanged between both sides
 //
-// Interpolation (proportional step + velocity cap):
-//   Each 1 kHz tick the RT loop computes:
+// Startup sequence:
+//   1. gRPC server starts accepting connections immediately.
+//   2. Main thread connects to the robot, calls readOnce() to populate
+//      telemetry, sets ready=true so Python can read current q as baseline.
+//   3. Main thread WAITS for the first SetJointTarget command.
+//   4. First command received → enter robot.control() 1 kHz RT loop.
+//   5. On ControlException: automaticErrorRecovery(), then WAIT for a new
+//      SetJointTarget before re-entering robot.control().
 //
-//     step = (goal_q - rs.q) / interp_N        ← spread delta over 1 policy period
-//     step = clamp(step, -max_step, +max_step)  ← hard velocity cap at 1 rad/s
+// Interpolation (ticks_remaining scheme):
+//   RT-private state per robot.control() call:
+//     interp_q       – current commanded position (seeded from readOnce)
+//     last_goal_seq  – detects new 25 Hz commands via goal_seq change
+//     ticks_remaining – ticks left in current 25 Hz command period
+//
+//   On new goal (goal_seq changes):
+//     ticks_remaining = interp_N
+//
+//   Each 1 kHz tick:
+//     step = (goal_q - interp_q) / ticks_remaining   ← constant per period
+//     step = clamp(step, -max_step, +max_step)        ← hard velocity cap
 //     interp_q += step
+//     --ticks_remaining
 //
-//   interp_N = round(1000 / policy_hz) = 40 at 25 Hz.
-//
-//   Normal case (goal_q advances by ~0.00175 rad every 40 ms):
-//     step ≈ 0.00175 / 40 = 0.0000437 rad/tick — smooth, well within limits.
-//
-//   Large jump (e.g. accumulated Python goal after auto-recovery):
-//     step is capped at 0.001 rad/tick (1 rad/s), approaches goal gradually.
+//   When ticks_remaining == 0: step = 0, hold position.
 //
 // Usage:
 //   ./franka_server <robot_ip> <grpc_listen_addr> [policy_hz]
@@ -31,6 +42,7 @@
 #include <atomic>
 #include <algorithm>
 #include <cmath>
+#include <condition_variable>
 #include <csignal>
 #include <cstring>
 #include <iomanip>
@@ -56,12 +68,13 @@ using grpc::Status;
 
 struct SharedState {
     std::mutex mtx;
+    std::condition_variable goal_cv;  // notified on each SetJointTarget / Stop
 
     // Written by gRPC SetJointTarget; read by RT loop each tick.
     std::array<double, 7> goal_q{};   // latest joint target from Python
     uint64_t              goal_seq{0}; // incremented on each SetJointTarget
 
-    // Written by RT loop; read by gRPC GetRobotState.
+    // Written by RT loop (or readOnce init); read by gRPC GetRobotState.
     std::array<double, 16> current_pose{};  // O_T_EE — actual measured pose
     std::array<double, 7>  current_q{};     // actual measured joint positions
     std::array<double, 7>  target_q{};      // current velocity-limited command
@@ -93,6 +106,7 @@ public:
                 s_.goal_q[i] = req->q(i);
             ++s_.goal_seq;
         }
+        s_.goal_cv.notify_one();  // wake up wait_for_goal
         rep->set_success(true);
         return Status::OK;
     }
@@ -116,6 +130,7 @@ public:
                 const franka_control::Empty*,
                 franka_control::CommandResult* rep) override {
         s_.stop = true;
+        s_.goal_cv.notify_all();  // wake up any wait_for_goal
         rep->set_success(true);
         rep->set_message("Stop requested");
         return Status::OK;
@@ -145,7 +160,10 @@ static SharedState* g_state_ptr = nullptr;
 
 void signal_handler(int) {
     std::cout << "\n[franka_server] SIGINT received, stopping..." << std::endl;
-    if (g_state_ptr) g_state_ptr->stop = true;
+    if (g_state_ptr) {
+        g_state_ptr->stop = true;
+        g_state_ptr->goal_cv.notify_all();  // wake up any wait_for_goal
+    }
 }
 
 // ── Main ────────────────────────────────────────────────────────────────────
@@ -155,13 +173,7 @@ int main(int argc, char** argv) {
     const std::string grpc_addr = (argc > 2) ? argv[2] : "0.0.0.0:50052";
     const double      policy_hz = (argc > 3) ? std::stod(argv[3]) : 25.0;
 
-    // Number of 1 kHz ticks per policy period — used to spread each waypoint
-    // evenly: step_per_tick = delta / interp_N.
     const int interp_N = static_cast<int>(std::round(1000.0 / policy_hz));
-
-    // Hard velocity cap: regardless of the computed step, never move more than
-    // max_step per tick (= 1 rad/s).  Protects against large jumps after
-    // auto-recovery when the accumulated Python goal is far from rs.q.
     constexpr double max_step = 0.001;  // rad per tick (= 1.0 rad/s)
 
     std::cout << "[franka_server] policy_hz=" << policy_hz
@@ -181,24 +193,47 @@ int main(int argc, char** argv) {
     franka::Robot robot(robot_ip);
     std::cout << "[franka_server] Connected." << std::endl;
 
+    // Read current robot state so Python can see q/target_q before the
+    // RT loop starts.  Set ready=true so Python's wait_until_ready() returns
+    // and it can read the baseline for its first SetJointTarget command.
+    {
+        franka::RobotState rs0 = robot.readOnce();
+        std::lock_guard<std::mutex> lk(state.mtx);
+        state.current_pose = rs0.O_T_EE;
+        state.current_q    = rs0.q;
+        state.target_q     = rs0.q;
+        state.goal_q       = rs0.q;
+        state.ready        = true;
+    }
+
+    // Helper: block until goal_seq > min_seq, or stop requested.
+    // Returns true if a goal arrived, false if stop was requested.
+    auto wait_for_goal = [&](uint64_t min_seq) -> bool {
+        std::unique_lock<std::mutex> lk(state.mtx);
+        state.goal_cv.wait(lk, [&]{
+            return state.goal_seq > min_seq || state.stop.load();
+        });
+        return !state.stop.load();
+    };
+
+    // ── Wait for the first command before entering the RT loop ─────────────
+    std::cout << "[franka_server] Ready. Waiting for first SetJointTarget..." << std::endl;
+    if (!wait_for_goal(0)) {
+        std::cout << "[franka_server] Stopped before first command." << std::endl;
+        if (g_server) g_server->Shutdown();
+        return 0;
+    }
+    std::cout << "[franka_server] First command received, starting control." << std::endl;
+
     // ── libfranka joint position control loop (with auto-recovery) ──────────
-    //
-    // The callback runs at 1 kHz.  It does NOT call gRPC — it only reads
-    // goal_q from SharedState (mutex, fast) and does arithmetic.
-    //
-    // RT-private state:
-    //   interp_q       – current commanded position, tracking goal_q
-    //   last_goal_seq  – last seen goal_seq; detects new 25 Hz commands
-    //   ticks_remaining – ticks left in the current 25 Hz command period;
-    //                     reset to interp_N on each new goal, then counted
-    //                     down each tick so step = d / ticks_remaining.
-    //
     while (!state.stop) {
-        bool control_initialized = false;
+
+        // Fresh robot state just before entering the RT loop.
+        // Seed interp_q from actual position to ensure zero discontinuity.
+        franka::RobotState rs0 = robot.readOnce();
 
         // Re-apply robot settings before every robot.control() call.
-        // automaticErrorRecovery() resets these to factory defaults, so they
-        // must be set again on each outer-loop iteration.
+        // automaticErrorRecovery() resets these to factory defaults.
         // NOTE: must be called before robot.control(), never inside the callback.
         robot.setCollisionBehavior(
             {{40,40,40,40,40,40,40}}, {{40,40,40,40,40,40,40}},
@@ -207,9 +242,23 @@ int main(int argc, char** argv) {
         robot.setCartesianImpedance({{3000, 3000, 3000, 300, 300, 300}});
 
         // RT-private state — reset on each outer loop iteration.
-        std::array<double, 7> interp_q{};  // current commanded position
-        uint64_t last_goal_seq  = 0;       // detects new goals from Python
-        int  ticks_remaining    = 0;       // ticks left in current 25 Hz period
+        std::array<double, 7> interp_q = rs0.q;  // seeded from actual position
+        uint64_t last_goal_seq  = 0;              // detects new goals from Python
+        int  ticks_remaining    = 0;              // ticks left in current 25 Hz period
+
+        // Update shared telemetry with the fresh read.
+        {
+            std::lock_guard<std::mutex> lk(state.mtx);
+            state.current_pose = rs0.O_T_EE;
+            state.current_q    = rs0.q;
+            state.target_q     = rs0.q;
+            state.error        = {};
+        }
+
+        std::cout << "[franka_server] Control loop starting. q = ["
+                  << rs0.q[0] << ", " << rs0.q[1] << ", " << rs0.q[2] << ", "
+                  << rs0.q[3] << ", " << rs0.q[4] << ", " << rs0.q[5] << ", "
+                  << rs0.q[6] << "]" << std::endl;
 
         try {
             robot.control(
@@ -219,46 +268,23 @@ int main(int argc, char** argv) {
                     // ── Lock shared state (minimal critical section) ───────
                     std::lock_guard<std::mutex> lk(state.mtx);
 
-                    // ── Initialise on first callback ───────────────────────
-                    if (!control_initialized) {
-                        // Seed from actual robot position: zero discontinuity.
-                        interp_q = rs.q;
-
-                        // Overwrite any accumulated goal from a previous run
-                        // so the first new command from Python is always just
-                        // one small step ahead of the current position.
-                        state.goal_q   = rs.q;
-                        state.target_q = rs.q;
-
-                        state.ready = true;
-                        control_initialized = true;
-                        std::cout << "[franka_server] Control loop started. q = ["
-                                  << rs.q[0] << ", " << rs.q[1] << ", " << rs.q[2] << ", "
-                                  << rs.q[3] << ", " << rs.q[4] << ", " << rs.q[5] << ", "
-                                  << rs.q[6] << "]" << std::endl;
-                    }
-
-                    // ── Velocity-limited tracking toward goal_q ───────────
-                    // When a new 25 Hz command arrives (goal_seq changed),
-                    // reset ticks_remaining = interp_N.
-                    //
-                    // Each tick:
-                    //   step = (goal - actual) / ticks_remaining
-                    //        ← remaining delta spread over remaining ticks
-                    //   step = clamp(step, -max_step, +max_step)
-                    //   interp_q[i] += step
-                    //   --ticks_remaining
-                    //
-                    // When ticks_remaining reaches 0 (between 25 Hz commands),
-                    // use d as the step, which means interp_q will finally reach goal_q.
+                    // ── Detect new 25 Hz command ───────────────────────────
                     if (state.goal_seq != last_goal_seq) {
                         last_goal_seq   = state.goal_seq;
                         ticks_remaining = interp_N;
                     }
+
+                    // ── Velocity-limited tracking toward goal_q ───────────
+                    // step = (goal_q - interp_q) / ticks_remaining
+                    //      = remaining commanded delta / remaining ticks
+                    //      = constant per 25 Hz period (linear interpolation)
+                    // Clamped to max_step to guard against large jumps.
+                    // When ticks_remaining == 0: hold position (step = 0).
                     const auto& gq = state.goal_q;
+                    interp_q = rs.q; 
                     for (int i = 0; i < 7; ++i) {
-                        double d    = gq[i] - rs.q[i];
-                        double step = (ticks_remaining > 0) ? d / ticks_remaining : d;
+                        double d    = gq[i] - interp_q[i];
+                        double step = (ticks_remaining > 0) ? d / ticks_remaining : 0.0;
                         interp_q[i] += std::max(-max_step, std::min(step, max_step));
                     }
                     if (ticks_remaining > 0) --ticks_remaining;
@@ -284,8 +310,8 @@ int main(int argc, char** argv) {
             std::cerr << "[franka_server] Control exception: " << e.what() << std::endl;
             {
                 std::lock_guard<std::mutex> lk(state.mtx);
-                const auto& cq = state.current_q;  // actual joint positions
-                const auto& tq = interp_q;          // last commanded (RT-private)
+                const auto& cq = state.current_q;
+                const auto& tq = interp_q;
                 std::cerr << std::fixed << std::setprecision(6)
                     << "[franka_server]   commanded (interp_q): ["
                     << tq[0] << ", " << tq[1] << ", " << tq[2] << ", "
@@ -307,14 +333,24 @@ int main(int argc, char** argv) {
             }
             try {
                 robot.automaticErrorRecovery();
-                std::cerr << "[franka_server] Recovered from error, resuming control." << std::endl;
             } catch (const franka::Exception& e2) {
                 std::cerr << "[franka_server] Recovery failed: " << e2.what() << std::endl;
                 std::lock_guard<std::mutex> lk(state.mtx);
                 state.error = e2.what();
-                state.ready = false;
                 break;
             }
+            // Wait for a new command before re-entering the RT loop.
+            // Set ready=true first so Python knows it can send commands again.
+            uint64_t seq_at_recovery;
+            {
+                std::lock_guard<std::mutex> lk(state.mtx);
+                seq_at_recovery = state.goal_seq;
+                state.ready = true;
+            }
+            std::cerr << "[franka_server] Recovered. Waiting for new SetJointTarget..." << std::endl;
+            if (!wait_for_goal(seq_at_recovery)) break;
+            std::cerr << "[franka_server] New command received, resuming control." << std::endl;
+
         } catch (const franka::Exception& e) {
             std::cerr << "[franka_server] Fatal Franka exception: " << e.what() << std::endl;
             std::lock_guard<std::mutex> lk(state.mtx);
