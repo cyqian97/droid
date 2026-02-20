@@ -255,14 +255,13 @@ def main():
             "gripper_position":   gripper_pos,
         }
 
-        # ── Compute and send action ───────────────────────────────────────────
-        if info["movement_enabled"]:
-            obs_dict = {"robot_state": robot_state_dict}
-            action = controller.forward(obs_dict)
-            # action: [lin_vel(3), rot_vel(3), gripper(1)], all in [-1, 1]
+        # ── Compute action (always, so gripper works without grip trigger) ──────
+        obs_dict = {"robot_state": robot_state_dict}
+        action = controller.forward(obs_dict)
+        # action: [lin_vel(3), rot_vel(3), gripper(1)], all in [-1, 1]
 
-            # IK: Cartesian velocity → joint delta (radians)
-            # RobotIKSolver is calibrated for 15 Hz (control_timestep = 1/15 s)
+        # ── Arm: only move when grip trigger held ─────────────────────────────
+        if info["movement_enabled"]:
             ik_robot_state = {
                 "joint_positions":  target_q.tolist(),
                 "joint_velocities": [0.0] * 7,
@@ -271,21 +270,20 @@ def main():
                 action[:6], ik_robot_state)
             joint_delta = ik_solver.joint_velocity_to_delta(joint_vel)
 
-            # New joint target
             new_target_q = target_q + joint_delta
             client.set_joint_target(new_target_q.tolist())
             target_q = new_target_q
 
-            # ── Gripper: integrate signal, send command on state change ───────
-            # action[6] > 0 → trigger pressed (close), < 0 → released (open)
-            gripper_pos = float(np.clip(gripper_pos + action[6] * 0.1, 0.0, 1.0))
-            want_closed = gripper_pos > 0.5
-            if want_closed and gripper_open:
-                client.set_gripper_target(GRIPPER_CLOSE, GRIPPER_SPEED)
-                gripper_open = False
-            elif not want_closed and not gripper_open:
-                client.set_gripper_target(GRIPPER_OPEN, GRIPPER_SPEED)
-                gripper_open = True
+        # ── Gripper: always active, independent of grip trigger ───────────────
+        # action[6] > 0 → index trigger pressed (close), < 0 → released (open)
+        gripper_pos = float(np.clip(gripper_pos + action[6] * 0.1, 0.0, 1.0))
+        want_closed = gripper_pos > 0.5
+        if want_closed and gripper_open:
+            client.set_gripper_target(GRIPPER_CLOSE, GRIPPER_SPEED)
+            gripper_open = False
+        elif not want_closed and not gripper_open:
+            client.set_gripper_target(GRIPPER_OPEN, GRIPPER_SPEED)
+            gripper_open = True
 
         # ── Regulate frequency ────────────────────────────────────────────────
         elapsed = time.time() - loop_start

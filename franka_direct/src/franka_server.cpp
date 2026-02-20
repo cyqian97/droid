@@ -80,8 +80,11 @@ struct ControllerConfig {
     std::array<double, 7> kp        = {{40.0, 30.0, 50.0, 25.0, 35.0, 25.0, 10.0}};
     std::array<double, 7> kd        = {{ 4.0,  6.0,  5.0,  5.0,  3.0,  2.0,  1.0}};
     std::array<double, 7> tau_limit = {{87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0}};
-    double max_step    = 0.001;  // rad per 1 kHz tick
-    double lpf_cutoff  = 100.0;  // torque output low-pass filter cutoff [Hz]
+    double max_step        = 0.001;  // rad per 1 kHz tick
+    double lpf_cutoff      = 100.0;  // torque output low-pass filter cutoff [Hz]
+    double gripper_force   =  20.0;  // grasp force [N]
+    double gripper_eps_in  =  0.08;  // grasp epsilon_inner [m]
+    double gripper_eps_out =  0.08;  // grasp epsilon_outer [m]
 };
 
 static std::string cfg_trim(const std::string& s) {
@@ -125,8 +128,11 @@ static ControllerConfig load_config(const std::string& path) {
         if      (key == "kp")        cfg.kp        = parse_array7(val);
         else if (key == "kd")        cfg.kd        = parse_array7(val);
         else if (key == "tau_limit") cfg.tau_limit = parse_array7(val);
-        else if (key == "max_step")   cfg.max_step   = std::stod(val);
-        else if (key == "lpf_cutoff") cfg.lpf_cutoff = std::stod(val);
+        else if (key == "max_step")        cfg.max_step        = std::stod(val);
+        else if (key == "lpf_cutoff")      cfg.lpf_cutoff      = std::stod(val);
+        else if (key == "gripper_force")   cfg.gripper_force   = std::stod(val);
+        else if (key == "gripper_eps_in")  cfg.gripper_eps_in  = std::stod(val);
+        else if (key == "gripper_eps_out") cfg.gripper_eps_out = std::stod(val);
         // unknown keys silently ignored
     }
     return cfg;
@@ -158,7 +164,8 @@ struct GripperSharedState {
 // Executes gripper.move() calls (which are blocking) in response to
 // SetGripperTarget RPC commands.  The arm loop is never affected.
 
-void run_gripper_thread(GripperSharedState& gs, const std::string& robot_ip) {
+void run_gripper_thread(GripperSharedState& gs, const std::string& robot_ip,
+                        const ControllerConfig& cfg) {
     try {
         franka::Gripper gripper(robot_ip);
         std::cout << "[franka_server] Gripper connected." << std::endl;
@@ -190,9 +197,20 @@ void run_gripper_thread(GripperSharedState& gs, const std::string& robot_ip) {
             }
 
             try {
-                gripper.move(width, speed);
+                if (width > 0.04) {
+                    // Opening: move() to exact width, no object contact expected.
+                    gripper.move(width, speed);
+                } else {
+                    // Closing: grasp() tolerates contact with objects.
+                    // Large epsilon_inner/outer so it succeeds with or without object.
+                    // Force 20 N is gentle enough for most objects.
+                    gripper.grasp(width, speed, cfg.gripper_force,
+                                  cfg.gripper_eps_in, cfg.gripper_eps_out);
+                }
             } catch (const franka::Exception& e) {
-                std::cerr << "[franka_server] Gripper move error: " << e.what() << std::endl;
+                std::cerr << "[franka_server] Gripper error: " << e.what() << std::endl;
+                // Clear the error state so the next command can proceed.
+                try { gripper.stop(); } catch (...) {}
             }
 
             // Refresh telemetry after move completes
@@ -394,7 +412,7 @@ int main(int argc, char** argv) {
     // ── Start gripper thread ────────────────────────────────────────────────
     // Connects to franka::Gripper independently of the arm RT loop.
     // If the gripper is unavailable the arm still operates normally.
-    std::thread gripper_thread([&]() { run_gripper_thread(gripper_state, robot_ip); });
+    std::thread gripper_thread([&]() { run_gripper_thread(gripper_state, robot_ip, cfg); });
     gripper_thread.detach();
 
     // ── Start gRPC server in background thread ──────────────────────────────
