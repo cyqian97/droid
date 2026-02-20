@@ -19,6 +19,11 @@ class FrankaControlStub(object):
                 request_serializer=franka__control__pb2.JointTarget.SerializeToString,
                 response_deserializer=franka__control__pb2.CommandResult.FromString,
                 )
+        self.SetGripperTarget = channel.unary_unary(
+                '/franka_control.FrankaControl/SetGripperTarget',
+                request_serializer=franka__control__pb2.GripperTarget.SerializeToString,
+                response_deserializer=franka__control__pb2.CommandResult.FromString,
+                )
         self.GetRobotState = channel.unary_unary(
                 '/franka_control.FrankaControl/GetRobotState',
                 request_serializer=franka__control__pb2.Empty.SerializeToString,
@@ -41,8 +46,15 @@ class FrankaControlServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def SetGripperTarget(self, request, context):
+        """Set desired gripper opening width
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def GetRobotState(self, request, context):
-        """Read current robot state
+        """Read current robot + gripper state
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -61,6 +73,11 @@ def add_FrankaControlServicer_to_server(servicer, server):
             'SetJointTarget': grpc.unary_unary_rpc_method_handler(
                     servicer.SetJointTarget,
                     request_deserializer=franka__control__pb2.JointTarget.FromString,
+                    response_serializer=franka__control__pb2.CommandResult.SerializeToString,
+            ),
+            'SetGripperTarget': grpc.unary_unary_rpc_method_handler(
+                    servicer.SetGripperTarget,
+                    request_deserializer=franka__control__pb2.GripperTarget.FromString,
                     response_serializer=franka__control__pb2.CommandResult.SerializeToString,
             ),
             'GetRobotState': grpc.unary_unary_rpc_method_handler(
@@ -96,6 +113,23 @@ class FrankaControl(object):
             metadata=None):
         return grpc.experimental.unary_unary(request, target, '/franka_control.FrankaControl/SetJointTarget',
             franka__control__pb2.JointTarget.SerializeToString,
+            franka__control__pb2.CommandResult.FromString,
+            options, channel_credentials,
+            insecure, call_credentials, compression, wait_for_ready, timeout, metadata)
+
+    @staticmethod
+    def SetGripperTarget(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(request, target, '/franka_control.FrankaControl/SetGripperTarget',
+            franka__control__pb2.GripperTarget.SerializeToString,
             franka__control__pb2.CommandResult.FromString,
             options, channel_credentials,
             insecure, call_credentials, compression, wait_for_ready, timeout, metadata)

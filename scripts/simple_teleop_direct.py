@@ -97,6 +97,10 @@ def main():
                         help="franka_server host (default: 192.168.1.6)")
     parser.add_argument("--port",     type=int,   default=50052,
                         help="franka_server gRPC port (default: 50052)")
+    parser.add_argument("--pos_gain", type=float, default=3.0,
+                        help="VRPolicy translational gain (default: 3.0)")
+    parser.add_argument("--rot_gain", type=float, default=1.0,
+                        help="VRPolicy rotational gain (default: 1.0)")
     args = parser.parse_args()
 
     right_controller = not args.left
@@ -136,9 +140,11 @@ def main():
     # === Step 3: Initialize VR controller =====================================
     print("Initializing VR controller ...")
     try:
-        controller = VRPolicy(right_controller=right_controller)
+        controller = VRPolicy(right_controller=right_controller,
+                              pos_action_gain=args.pos_gain,
+                              rot_action_gain=args.rot_gain)
         side = "right" if right_controller else "left"
-        print(f"[OK] VR controller initialized ({side} hand)")
+        print(f"[OK] VR controller initialized ({side} hand, pos_gain={args.pos_gain}, rot_gain={args.rot_gain})")
     except Exception as e:
         print(f"[FAIL] Could not initialize VR controller: {e}")
         sys.exit(1)
