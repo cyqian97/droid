@@ -14,7 +14,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x14\x66ranka_control.proto\x12\x0e\x66ranka_control\"\x07\n\x05\x45mpty\"\x1f\n\x0f\x43\x61rtesianTarget\x12\x0c\n\x04pose\x18\x01 \x03(\x01\"r\n\nRobotState\x12\x0c\n\x04pose\x18\x01 \x03(\x01\x12\t\n\x01q\x18\x02 \x03(\x01\x12\x18\n\x10\x63md_success_rate\x18\x03 \x01(\x01\x12\r\n\x05ready\x18\x04 \x01(\x08\x12\r\n\x05\x65rror\x18\x05 \x01(\t\x12\x13\n\x0btarget_pose\x18\x06 \x03(\x01\"1\n\rCommandResult\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t2\xe7\x01\n\rFrankaControl\x12T\n\x12SetCartesianTarget\x12\x1f.franka_control.CartesianTarget\x1a\x1d.franka_control.CommandResult\x12\x42\n\rGetRobotState\x12\x15.franka_control.Empty\x1a\x1a.franka_control.RobotState\x12<\n\x04Stop\x12\x15.franka_control.Empty\x1a\x1d.franka_control.CommandResultb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x14\x66ranka_control.proto\x12\x0e\x66ranka_control\"\x07\n\x05\x45mpty\"\x18\n\x0bJointTarget\x12\t\n\x01q\x18\x01 \x03(\x01\"o\n\nRobotState\x12\x0c\n\x04pose\x18\x01 \x03(\x01\x12\t\n\x01q\x18\x02 \x03(\x01\x12\x18\n\x10\x63md_success_rate\x18\x03 \x01(\x01\x12\r\n\x05ready\x18\x04 \x01(\x08\x12\r\n\x05\x65rror\x18\x05 \x01(\t\x12\x10\n\x08target_q\x18\x06 \x03(\x01\"1\n\rCommandResult\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t2\xdf\x01\n\rFrankaControl\x12L\n\x0eSetJointTarget\x12\x1b.franka_control.JointTarget\x1a\x1d.franka_control.CommandResult\x12\x42\n\rGetRobotState\x12\x15.franka_control.Empty\x1a\x1a.franka_control.RobotState\x12<\n\x04Stop\x12\x15.franka_control.Empty\x1a\x1d.franka_control.CommandResultb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -23,12 +23,12 @@ if _descriptor._USE_C_DESCRIPTORS == False:
   DESCRIPTOR._options = None
   _globals['_EMPTY']._serialized_start=40
   _globals['_EMPTY']._serialized_end=47
-  _globals['_CARTESIANTARGET']._serialized_start=49
-  _globals['_CARTESIANTARGET']._serialized_end=80
-  _globals['_ROBOTSTATE']._serialized_start=82
-  _globals['_ROBOTSTATE']._serialized_end=196
-  _globals['_COMMANDRESULT']._serialized_start=198
-  _globals['_COMMANDRESULT']._serialized_end=247
-  _globals['_FRANKACONTROL']._serialized_start=250
-  _globals['_FRANKACONTROL']._serialized_end=481
+  _globals['_JOINTTARGET']._serialized_start=49
+  _globals['_JOINTTARGET']._serialized_end=73
+  _globals['_ROBOTSTATE']._serialized_start=75
+  _globals['_ROBOTSTATE']._serialized_end=186
+  _globals['_COMMANDRESULT']._serialized_start=188
+  _globals['_COMMANDRESULT']._serialized_end=237
+  _globals['_FRANKACONTROL']._serialized_start=240
+  _globals['_FRANKACONTROL']._serialized_end=463
 # @@protoc_insertion_point(module_scope)

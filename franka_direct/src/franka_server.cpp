@@ -8,14 +8,20 @@
 //   - gRPC threads:  handle SetJointTarget / GetRobotState at any rate
 //   - Shared state:  a mutex-protected struct exchanged between both sides
 //
-// Waypoint interpolation:
-//   The policy runs at ~25 Hz and sends sparse joint position targets.  The
-//   RT loop linearly interpolates between the last received goal and the new
-//   one over N = ceil(1000 / policy_hz) ticks so the joint position controller
-//   always receives smooth, closely-spaced targets.
+// Interpolation (proportional step + velocity cap):
+//   Each 1 kHz tick the RT loop computes:
 //
-//   When a new goal arrives mid-segment the interpolation restarts from the
-//   current interpolated position — the arm never jumps.
+//     step = (goal_q - rs.q) / interp_N        ← spread delta over 1 policy period
+//     step = clamp(step, -max_step, +max_step)  ← hard velocity cap at 1 rad/s
+//     interp_q += step
+//
+//   interp_N = round(1000 / policy_hz) = 40 at 25 Hz.
+//
+//   Normal case (goal_q advances by ~0.00175 rad every 40 ms):
+//     step ≈ 0.00175 / 40 = 0.0000437 rad/tick — smooth, well within limits.
+//
+//   Large jump (e.g. accumulated Python goal after auto-recovery):
+//     step is capped at 0.001 rad/tick (1 rad/s), approaches goal gradually.
 //
 // Usage:
 //   ./franka_server <robot_ip> <grpc_listen_addr> [policy_hz]
@@ -23,6 +29,7 @@
 
 #include <array>
 #include <atomic>
+#include <algorithm>
 #include <cmath>
 #include <csignal>
 #include <cstring>
@@ -57,7 +64,7 @@ struct SharedState {
     // Written by RT loop; read by gRPC GetRobotState.
     std::array<double, 16> current_pose{};  // O_T_EE — actual measured pose
     std::array<double, 7>  current_q{};     // actual measured joint positions
-    std::array<double, 7>  target_q{};      // current interpolated joint command
+    std::array<double, 7>  target_q{};      // current velocity-limited command
     double cmd_success_rate{0.0};
     bool   ready{false};
     std::string error{};
@@ -96,8 +103,8 @@ public:
         std::lock_guard<std::mutex> lk(s_.mtx);
         for (double v : s_.current_pose) rep->add_pose(v);
         for (double v : s_.current_q)    rep->add_q(v);
-        // target_q = current interpolated joint command, useful as baseline for
-        // the Python client's next SetJointTarget call.
+        // target_q = current velocity-limited command, use as baseline for
+        // the next SetJointTarget call to avoid large jumps.
         for (double v : s_.target_q)     rep->add_target_q(v);
         rep->set_cmd_success_rate(s_.cmd_success_rate);
         rep->set_ready(s_.ready);
@@ -144,16 +151,22 @@ void signal_handler(int) {
 // ── Main ────────────────────────────────────────────────────────────────────
 
 int main(int argc, char** argv) {
-    const std::string robot_ip   = (argc > 1) ? argv[1] : "192.168.1.11";
-    const std::string grpc_addr  = (argc > 2) ? argv[2] : "0.0.0.0:50052";
-    const double      policy_hz  = (argc > 3) ? std::stod(argv[3]) : 25.0;
+    const std::string robot_ip  = (argc > 1) ? argv[1] : "192.168.1.11";
+    const std::string grpc_addr = (argc > 2) ? argv[2] : "0.0.0.0:50052";
+    const double      policy_hz = (argc > 3) ? std::stod(argv[3]) : 25.0;
 
-    // Number of 1 kHz ticks to spend travelling from one waypoint to the next.
-    // At 25 Hz: N = 40; increase if the policy runs slower.
-    const int interp_N = static_cast<int>(std::ceil(1000.0 / policy_hz));
+    // Number of 1 kHz ticks per policy period — used to spread each waypoint
+    // evenly: step_per_tick = delta / interp_N.
+    const int interp_N = static_cast<int>(std::round(1000.0 / policy_hz));
+
+    // Hard velocity cap: regardless of the computed step, never move more than
+    // max_step per tick (= 1 rad/s).  Protects against large jumps after
+    // auto-recovery when the accumulated Python goal is far from rs.q.
+    constexpr double max_step = 0.001;  // rad per tick (= 1.0 rad/s)
 
     std::cout << "[franka_server] policy_hz=" << policy_hz
-              << "  interp_N=" << interp_N << " ticks/waypoint" << std::endl;
+              << "  interp_N=" << interp_N << " ticks/waypoint"
+              << "  max_step=" << max_step << " rad/tick" << std::endl;
 
     SharedState state;
     g_state_ptr = &state;
@@ -171,14 +184,14 @@ int main(int argc, char** argv) {
     // ── libfranka joint position control loop (with auto-recovery) ──────────
     //
     // The callback runs at 1 kHz.  It does NOT call gRPC — it only reads
-    // goal_q / goal_seq from SharedState (mutex, fast) and does arithmetic.
+    // goal_q from SharedState (mutex, fast) and does arithmetic.
     //
-    // Interpolation state (RT-private, no mutex needed):
-    //   interp_start  – joints at the beginning of the current segment
-    //   interp_goal   – joints at the end of the current segment (= last goal_q)
-    //   interp_q      – current interpolated command, sent to the robot
-    //   interp_tick   – ticks elapsed in this segment  [0 .. interp_N]
-    //   last_goal_seq – goal_seq value when interp_goal was last set
+    // RT-private state:
+    //   interp_q       – current commanded position, tracking goal_q
+    //   last_goal_seq  – last seen goal_seq; detects new 25 Hz commands
+    //   ticks_remaining – ticks left in the current 25 Hz command period;
+    //                     reset to interp_N on each new goal, then counted
+    //                     down each tick so step = d / ticks_remaining.
     //
     while (!state.stop) {
         bool control_initialized = false;
@@ -186,20 +199,17 @@ int main(int argc, char** argv) {
         // Re-apply robot settings before every robot.control() call.
         // automaticErrorRecovery() resets these to factory defaults, so they
         // must be set again on each outer-loop iteration.
-        // NOTE: these must be set before robot.control(), never inside the
-        // 1 kHz callback (per libfranka documentation).
+        // NOTE: must be called before robot.control(), never inside the callback.
         robot.setCollisionBehavior(
             {{40,40,40,40,40,40,40}}, {{40,40,40,40,40,40,40}},
             {{40,40,40,40,40,40}},    {{40,40,40,40,40,40}});
         robot.setJointImpedance({{3000, 3000, 3000, 2500, 2500, 2000, 2000}});
         robot.setCartesianImpedance({{3000, 3000, 3000, 300, 300, 300}});
 
-        // RT-private interpolation state — reset on each outer loop iteration.
-        std::array<double, 7> interp_start{};
-        std::array<double, 7> interp_goal{};
-        std::array<double, 7> interp_q{};
-        int      interp_tick   = 0;
-        uint64_t last_goal_seq = 0;
+        // RT-private state — reset on each outer loop iteration.
+        std::array<double, 7> interp_q{};  // current commanded position
+        uint64_t last_goal_seq  = 0;       // detects new goals from Python
+        int  ticks_remaining    = 0;       // ticks left in current 25 Hz period
 
         try {
             robot.control(
@@ -211,18 +221,14 @@ int main(int argc, char** argv) {
 
                     // ── Initialise on first callback ───────────────────────
                     if (!control_initialized) {
-                        // Seed everything from the robot's current actual joint
-                        // positions so there is zero discontinuity at startup.
-                        interp_start = rs.q;
-                        interp_goal  = rs.q;
-                        interp_q     = rs.q;
-                        interp_tick  = interp_N;   // already "arrived"
+                        // Seed from actual robot position: zero discontinuity.
+                        interp_q = rs.q;
 
-                        // Publish goal_q so Python can read a valid baseline
-                        // from GetRobotState before sending the first target.
+                        // Overwrite any accumulated goal from a previous run
+                        // so the first new command from Python is always just
+                        // one small step ahead of the current position.
                         state.goal_q   = rs.q;
                         state.target_q = rs.q;
-                        last_goal_seq  = state.goal_seq;
 
                         state.ready = true;
                         control_initialized = true;
@@ -232,37 +238,36 @@ int main(int argc, char** argv) {
                                   << rs.q[6] << "]" << std::endl;
                     }
 
-                    // ── Detect new waypoint from Python ───────────────────
+                    // ── Velocity-limited tracking toward goal_q ───────────
+                    // When a new 25 Hz command arrives (goal_seq changed),
+                    // reset ticks_remaining = interp_N.
+                    //
+                    // Each tick:
+                    //   step = (goal - actual) / ticks_remaining
+                    //        ← remaining delta spread over remaining ticks
+                    //   step = clamp(step, -max_step, +max_step)
+                    //   interp_q[i] += step
+                    //   --ticks_remaining
+                    //
+                    // When ticks_remaining reaches 0 (between 25 Hz commands),
+                    // hold position (step = 0).
                     if (state.goal_seq != last_goal_seq) {
-                        // A new goal has arrived.  Start a fresh segment from
-                        // wherever we currently are (interp_q), so the arm
-                        // never jumps.
-                        interp_start  = interp_q;
-                        interp_goal   = state.goal_q;
-                        interp_tick   = 0;
-                        last_goal_seq = state.goal_seq;
+                        last_goal_seq   = state.goal_seq;
+                        ticks_remaining = interp_N;
                     }
-
-                    // ── Advance linear interpolation ──────────────────────
-                    // interp_tick counts ticks elapsed in the current segment.
-                    // Clamp at interp_N so the arm holds the goal once reached
-                    // (until the next waypoint arrives).
-                    if (interp_tick < interp_N) {
-                        ++interp_tick;
-                    }
-                    const double alpha = static_cast<double>(interp_tick) / interp_N;
+                    const auto& gq = state.goal_q;
                     for (int i = 0; i < 7; ++i) {
-                        interp_q[i] = interp_start[i]
-                                      + alpha * (interp_goal[i] - interp_start[i]);
+                        double d    = gq[i] - rs.q[i];
+                        double step = (ticks_remaining > 0) ? d / ticks_remaining : d;
+                        interp_q[i] += std::max(-max_step, std::min(step, max_step));
                     }
+                    if (ticks_remaining > 0) --ticks_remaining;
 
                     // ── Update telemetry ──────────────────────────────────
                     state.current_pose     = rs.O_T_EE;
                     state.current_q        = rs.q;
                     state.cmd_success_rate = rs.control_command_success_rate;
-                    // Publish the interpolated command so Python's
-                    // GetRobotState("target_q") sees where the arm is heading.
-                    state.target_q = interp_q;
+                    state.target_q         = interp_q;
 
                     // ── Finish motion if stop requested ───────────────────
                     if (state.stop) {
@@ -280,7 +285,7 @@ int main(int argc, char** argv) {
             {
                 std::lock_guard<std::mutex> lk(state.mtx);
                 const auto& cq = state.current_q;  // actual joint positions
-                const auto& tq = interp_q;          // last commanded (RT-private, no mutex needed)
+                const auto& tq = interp_q;          // last commanded (RT-private)
                 std::cerr << std::fixed << std::setprecision(6)
                     << "[franka_server]   commanded (interp_q): ["
                     << tq[0] << ", " << tq[1] << ", " << tq[2] << ", "
@@ -297,8 +302,6 @@ int main(int argc, char** argv) {
                     if (i < 6) std::cerr << ", ";
                 }
                 std::cerr << "]  max_delta=" << std::setprecision(4) << max_delta << " rad"
-                    << "  interp_tick=" << interp_tick << "/" << interp_N
-                    << "  alpha=" << static_cast<double>(interp_tick) / interp_N
                     << std::endl;
                 state.ready = false;
             }
