@@ -198,7 +198,6 @@ def main():
 
     # === Step 6: Main control loop ============================================
     step_count    = 0
-    gripper_pos   = 0.0    # integrated VRPolicy gripper signal [0, 1]
     gripper_open  = True   # current commanded state (True = open, False = closed)
     GRIPPER_OPEN  = 0.08   # Franka Hand max width [m]
     GRIPPER_CLOSE = 0.0    # fully closed [m]
@@ -248,20 +247,14 @@ def main():
         # current_q and target_q from server
         target_q = np.array(state["target_q"])   # use commanded pose as IK base
 
-        # Build a state_dict compatible with VRPolicy._calculate_action
-        cartesian_pos = pose16_to_cartesian(state["pose"])   # actual measured EE pose
-        robot_state_dict = {
-            "cartesian_position": cartesian_pos,
-            "gripper_position":   gripper_pos,
-        }
-
-        # ── Compute action (always, so gripper works without grip trigger) ──────
-        obs_dict = {"robot_state": robot_state_dict}
-        action = controller.forward(obs_dict)
-        # action: [lin_vel(3), rot_vel(3), gripper(1)], all in [-1, 1]
-
         # ── Arm: only move when grip trigger held ─────────────────────────────
         if info["movement_enabled"]:
+            cartesian_pos = pose16_to_cartesian(state["pose"])
+            obs_dict = {"robot_state": {
+                "cartesian_position": cartesian_pos,
+                "gripper_position":   float(state["gripper_width"]),
+            }}
+            action = controller.forward(obs_dict)
             ik_robot_state = {
                 "joint_positions":  target_q.tolist(),
                 "joint_velocities": [0.0] * 7,
@@ -274,10 +267,12 @@ def main():
             client.set_joint_target(new_target_q.tolist())
             target_q = new_target_q
 
-        # ── Gripper: always active, independent of grip trigger ───────────────
-        # action[6] > 0 → index trigger pressed (close), < 0 → released (open)
-        gripper_pos = float(np.clip(gripper_pos + action[6] * 0.1, 0.0, 1.0))
-        want_closed = gripper_pos > 0.5
+        # ── Gripper: always active, read index trigger directly ───────────────
+        # VRPolicy only updates vr_state when the grip trigger is held, so
+        # forward() can't be used here.  Read the raw trigger value instead.
+        trig_key = "rightTrig" if right_controller else "leftTrig"
+        index_trig = controller._state["buttons"].get(trig_key, [0.0])[0]
+        want_closed = index_trig > 0.5
         if want_closed and gripper_open:
             client.set_gripper_target(GRIPPER_CLOSE, GRIPPER_SPEED)
             gripper_open = False
@@ -292,8 +287,9 @@ def main():
             time.sleep(sleep_t)
 
         actual_hz = 1.0 / max(time.time() - loop_start, 1e-6)
+        ee_pose = pose16_to_cartesian(state["pose"])
         print_status(step_count, info["movement_enabled"], actual_hz,
-                     cartesian_pos, state["gripper_width"])
+                     ee_pose, state["gripper_width"])
 
     # === Cleanup ==============================================================
     print("\nTeleoperation ended.")
