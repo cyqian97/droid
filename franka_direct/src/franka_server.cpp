@@ -252,6 +252,7 @@ int main(int argc, char** argv) {
         std::array<double, 7> interp_q = rs0.q;  // seeded from actual position
         uint64_t last_goal_seq  = 0;              // detects new goals from Python
         int  ticks_remaining    = 0;              // ticks left in current 25 Hz period
+        uint64_t tick           = 0;              // total ticks since control loop started
 
         // Update shared telemetry with the fresh read.
         {
@@ -295,6 +296,7 @@ int main(int argc, char** argv) {
                         interp_q[i] += std::max(-max_step, std::min(step, max_step));
                     }
                     if (ticks_remaining > 0) --ticks_remaining;
+                    ++tick;
 
                     // ── Update telemetry ──────────────────────────────────
                     state.current_pose     = rs.O_T_EE;
@@ -314,7 +316,8 @@ int main(int argc, char** argv) {
             );
 
         } catch (const franka::ControlException& e) {
-            std::cerr << "[franka_server] Control exception: " << e.what() << std::endl;
+            std::cerr << "[franka_server] Control exception at tick " << tick
+                      << " (" << (tick / 1000.0) << " s): " << e.what() << std::endl;
             {
                 std::lock_guard<std::mutex> lk(state.mtx);
                 const auto& cq = state.current_q;
