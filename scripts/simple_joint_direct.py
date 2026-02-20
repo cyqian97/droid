@@ -106,6 +106,8 @@ def main():
         print(f"[ERROR] Expected 7 joint positions, got {len(target_q)}")
         sys.exit(1)
 
+    initial_target_q = list(target_q)  # snapshot before motion
+
     print(f"\n[OK] Initial joint target:  {fmt_q(target_q)} rad")
     print(f"     actual joint positions: {fmt_q(state['q'])} rad")
     print(f"     cmd_success_rate = {state['cmd_success_rate']:.3f}")
@@ -223,6 +225,23 @@ def main():
                 print(f"      ... and {len(rate_dip_steps)-10} more")
         else:
             print(f"    Dips <0.99: 0  (RT loop ran clean throughout)")
+
+    # ── Pose accuracy check ───────────────────────────────────────────────────
+    final_state = client.get_robot_state()
+    actual_final_q  = final_state["q"]
+    desired_final_q = list(initial_target_q)
+    for j in joint_idxs:
+        desired_final_q[j] += (step + 1) * delta_rad
+
+    print(f"\n  POSE ACCURACY (desired final vs actual final):")
+    print(f"    {'joint':>5}  {'desired (rad)':>13}  {'actual (rad)':>13}  {'error (rad)':>11}  {'error (deg)':>11}")
+    max_err_rad = 0.0
+    for i in range(7):
+        err = actual_final_q[i] - desired_final_q[i]
+        if abs(err) > max_err_rad:
+            max_err_rad = abs(err)
+        print(f"    q[{i}]  {desired_final_q[i]:>+13.6f}  {actual_final_q[i]:>+13.6f}  {err:>+11.6f}  {np.rad2deg(err):>+11.4f}")
+    print(f"    max |error| = {max_err_rad:.6f} rad  ({np.rad2deg(max_err_rad):.4f} deg)")
 
     client.stop()
     client.close()
