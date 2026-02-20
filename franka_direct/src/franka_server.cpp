@@ -79,7 +79,8 @@ struct ControllerConfig {
     std::array<double, 7> kp        = {{40.0, 30.0, 50.0, 25.0, 35.0, 25.0, 10.0}};
     std::array<double, 7> kd        = {{ 4.0,  6.0,  5.0,  5.0,  3.0,  2.0,  1.0}};
     std::array<double, 7> tau_limit = {{87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0}};
-    double max_step = 0.001;  // rad per 1 kHz tick
+    double max_step    = 0.001;  // rad per 1 kHz tick
+    double lpf_cutoff  = 100.0;  // torque output low-pass filter cutoff [Hz]
 };
 
 static std::string cfg_trim(const std::string& s) {
@@ -123,7 +124,8 @@ static ControllerConfig load_config(const std::string& path) {
         if      (key == "kp")        cfg.kp        = parse_array7(val);
         else if (key == "kd")        cfg.kd        = parse_array7(val);
         else if (key == "tau_limit") cfg.tau_limit = parse_array7(val);
-        else if (key == "max_step")  cfg.max_step  = std::stod(val);
+        else if (key == "max_step")   cfg.max_step   = std::stod(val);
+        else if (key == "lpf_cutoff") cfg.lpf_cutoff = std::stod(val);
         // unknown keys silently ignored
     }
     return cfg;
@@ -258,9 +260,15 @@ int main(int argc, char** argv) {
     const auto&   tau_limit = cfg.tau_limit;
     const double  max_step  = cfg.max_step;
 
+    // First-order LPF gain for torque output (matches polymetis lpf_cutoff_frequency).
+    // gain = dt / (dt + 1/(2π·f_c)),  dt = 1 ms
+    constexpr double dt = 0.001;
+    const double lpf_gain = dt / (dt + 1.0 / (2.0 * M_PI * cfg.lpf_cutoff));
+
     std::cout << "[franka_server] policy_hz=" << policy_hz
               << "  interp_N=" << interp_N << " ticks/waypoint"
-              << "  max_step=" << max_step << " rad/tick\n"
+              << "  max_step=" << max_step << " rad/tick"
+              << "  lpf_cutoff=" << cfg.lpf_cutoff << " Hz (gain=" << lpf_gain << ")\n"
               << "[franka_server] Kp:        [";
     for (int i = 0; i < 7; ++i) std::cout << kp[i] << (i<6?", ":"");
     std::cout << "]\n[franka_server] Kd:        [";
@@ -329,7 +337,8 @@ int main(int argc, char** argv) {
             {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}}, {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}});
 
         // RT-private state — reset on each outer loop iteration.
-        std::array<double, 7> interp_q = rs0.q;  // seeded from actual position
+        std::array<double, 7> interp_q     = rs0.q;  // seeded from actual position
+        std::array<double, 7> filtered_tau = {};      // LPF state, zero-initialised
         uint64_t last_goal_seq  = 0;
         int  ticks_remaining    = 0;
         uint64_t tick           = 0;
@@ -394,10 +403,14 @@ int main(int argc, char** argv) {
                     // Clamped to hardware torque limits.
                     std::array<double, 7> tau;
                     for (int i = 0; i < 7; ++i) {
-                        tau[i] = kp[i] * (interp_q[i] - rs.q[i])
-                               - kd[i] * rs.dq[i]
-                               + coriolis[i];
-                        tau[i] = std::max(-tau_limit[i], std::min(tau[i], tau_limit[i]));
+                        double raw = kp[i] * (interp_q[i] - rs.q[i])
+                                   - kd[i] * rs.dq[i]
+                                   + coriolis[i];
+                        // First-order LPF (matches polymetis lpf_cutoff_frequency=100 Hz).
+                        // Smooths high-frequency noise in dq that would otherwise cause
+                        // oscillations, especially visible when the arm is held still.
+                        filtered_tau[i] = lpf_gain * raw + (1.0 - lpf_gain) * filtered_tau[i];
+                        tau[i] = std::max(-tau_limit[i], std::min(filtered_tau[i], tau_limit[i]));
                     }
 
                     // ── Update telemetry ──────────────────────────────────
