@@ -145,7 +145,7 @@ struct GripperSharedState {
 
     // Telemetry (written by gripper thread; read by gRPC GetRobotState).
     double current_width{0.08};
-    bool   is_grasping{false};
+    bool   is_grasped{false};
     bool   ready{false};
     std::string error;
 
@@ -168,7 +168,7 @@ void run_gripper_thread(GripperSharedState& gs, const std::string& robot_ip) {
             auto s = gripper.readOnce();
             std::lock_guard<std::mutex> lk(gs.mtx);
             gs.current_width = s.width;
-            gs.is_grasping   = s.is_grasping;
+            gs.is_grasped    = s.is_grasped;
             gs.ready         = true;
         }
         std::cout << "[franka_server] Gripper ready. Width = "
@@ -200,7 +200,7 @@ void run_gripper_thread(GripperSharedState& gs, const std::string& robot_ip) {
                 auto s = gripper.readOnce();
                 std::lock_guard<std::mutex> lk(gs.mtx);
                 gs.current_width = s.width;
-                gs.is_grasping   = s.is_grasping;
+                gs.is_grasped    = s.is_grasped;
             } catch (...) {}
         }
     } catch (const franka::Exception& e) {
@@ -289,7 +289,7 @@ public:
         {
             std::lock_guard<std::mutex> lk(gs_.mtx);
             rep->set_gripper_width(gs_.current_width);
-            rep->set_gripper_grasping(gs_.is_grasping);
+            rep->set_gripper_grasping(gs_.is_grasped);
         }
         return Status::OK;
     }
