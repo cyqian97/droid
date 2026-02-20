@@ -174,7 +174,7 @@ int main(int argc, char** argv) {
     const double      policy_hz = (argc > 3) ? std::stod(argv[3]) : 25.0;
 
     const int interp_N = static_cast<int>(std::round(1000.0 / policy_hz));
-    constexpr double max_step = 0.000001;  // rad per tick (= 1.0 rad/s)
+    constexpr double max_step = 1e-7;  // rad per tick (= 1.0 rad/s)
 
     std::cout << "[franka_server] policy_hz=" << policy_hz
               << "  interp_N=" << interp_N << " ticks/waypoint"
