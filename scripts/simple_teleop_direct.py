@@ -270,6 +270,9 @@ def main():
         client.close()
     except Exception:
         pass
+    # VRPolicy runs a non-daemon background thread that would otherwise keep
+    # the process alive indefinitely after the main loop exits.
+    os._exit(0)
 
 
 if __name__ == "__main__":
