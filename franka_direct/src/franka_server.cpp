@@ -235,11 +235,18 @@ int main(int argc, char** argv) {
         // Re-apply robot settings before every robot.control() call.
         // automaticErrorRecovery() resets these to factory defaults.
         // NOTE: must be called before robot.control(), never inside the callback.
+        // robot.setCollisionBehavior(
+        //     {{40,40,40,40,40,40,40}}, {{40,40,40,40,40,40,40}},
+        //     {{40,40,40,40,40,40}},    {{40,40,40,40,40,40}});
+        // robot.setJointImpedance({{3000, 3000, 3000, 2500, 2500, 2000, 2000}});
+        // robot.setCartesianImpedance({{3000, 3000, 3000, 300, 300, 300}});
+
         robot.setCollisionBehavior(
-            {{40,40,40,40,40,40,40}}, {{40,40,40,40,40,40,40}},
-            {{40,40,40,40,40,40}},    {{40,40,40,40,40,40}});
-        robot.setJointImpedance({{3000, 3000, 3000, 2500, 2500, 2000, 2000}});
-        robot.setCartesianImpedance({{3000, 3000, 3000, 300, 300, 300}});
+            {{20.0, 20.0, 18.0, 18.0, 16.0, 14.0, 12.0}}, {{20.0, 20.0, 18.0, 18.0, 16.0, 14.0, 12.0}},
+            {{20.0, 20.0, 18.0, 18.0, 16.0, 14.0, 12.0}}, {{20.0, 20.0, 18.0, 18.0, 16.0, 14.0, 12.0}},
+            {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}}, {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}},
+            {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}}, {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}});
+
 
         // RT-private state — reset on each outer loop iteration.
         std::array<double, 7> interp_q = rs0.q;  // seeded from actual position
@@ -281,7 +288,7 @@ int main(int argc, char** argv) {
                     // Clamped to max_step to guard against large jumps.
                     // When ticks_remaining == 0: hold position (step = 0).
                     const auto& gq = state.goal_q;
-                    interp_q = rs.q; 
+                    // interp_q = rs.q; 
                     for (int i = 0; i < 7; ++i) {
                         double d    = gq[i] - interp_q[i];
                         double step = (ticks_remaining > 0) ? d / ticks_remaining : 0.0;
@@ -302,7 +309,7 @@ int main(int argc, char** argv) {
                         return p;
                     }
 
-                    return franka::JointPositions(interp_q);
+                    return franka::JointPositions(rs.q);  // ignore interp_q, just hold current position
                 }
             );
 
