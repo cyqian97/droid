@@ -1,21 +1,21 @@
 // franka_server.cpp
 //
 // Lightweight gRPC server that drives a Franka robot with libfranka's
-// built-in Cartesian impedance controller.
+// joint position controller.
 //
 // Architecture:
 //   - Main thread:   libfranka robot.control() 1 kHz RT loop (no gRPC inside)
-//   - gRPC threads:  handle SetCartesianTarget / GetRobotState at any rate
+//   - gRPC threads:  handle SetJointTarget / GetRobotState at any rate
 //   - Shared state:  a mutex-protected struct exchanged between both sides
 //
 // Waypoint interpolation:
-//   The policy runs at ~25 Hz and sends sparse Cartesian pose targets.  The
+//   The policy runs at ~25 Hz and sends sparse joint position targets.  The
 //   RT loop linearly interpolates between the last received goal and the new
-//   one over N = ceil(1000 / policy_hz) ticks so the Franka motion generator
+//   one over N = ceil(1000 / policy_hz) ticks so the joint position controller
 //   always receives smooth, closely-spaced targets.
 //
 //   When a new goal arrives mid-segment the interpolation restarts from the
-//   current interpolated pose — the arm never jumps.
+//   current interpolated position — the arm never jumps.
 //
 // Usage:
 //   ./franka_server <robot_ip> <grpc_listen_addr> [policy_hz]
@@ -50,14 +50,14 @@ using grpc::Status;
 struct SharedState {
     std::mutex mtx;
 
-    // Written by gRPC SetCartesianTarget; read by RT loop each tick.
-    std::array<double, 16> goal_pose{};  // latest waypoint from Python
-    uint64_t               goal_seq{0};  // incremented on each SetCartesianTarget
+    // Written by gRPC SetJointTarget; read by RT loop each tick.
+    std::array<double, 7> goal_q{};   // latest joint target from Python
+    uint64_t              goal_seq{0}; // incremented on each SetJointTarget
 
     // Written by RT loop; read by gRPC GetRobotState.
     std::array<double, 16> current_pose{};  // O_T_EE — actual measured pose
-    std::array<double, 16> target_pose{};   // current interpolated command (≠ goal_pose)
-    std::array<double, 7>  current_q{};
+    std::array<double, 7>  current_q{};     // actual measured joint positions
+    std::array<double, 7>  target_q{};      // current interpolated joint command
     double cmd_success_rate{0.0};
     bool   ready{false};
     std::string error{};
@@ -72,18 +72,18 @@ class FrankaControlImpl final : public franka_control::FrankaControl::Service {
 public:
     explicit FrankaControlImpl(SharedState& s) : s_(s) {}
 
-    Status SetCartesianTarget(ServerContext*,
-                              const franka_control::CartesianTarget* req,
-                              franka_control::CommandResult* rep) override {
-        if (req->pose_size() != 16) {
+    Status SetJointTarget(ServerContext*,
+                          const franka_control::JointTarget* req,
+                          franka_control::CommandResult* rep) override {
+        if (req->q_size() != 7) {
             rep->set_success(false);
-            rep->set_message("Expected exactly 16 doubles for O_T_EE pose");
+            rep->set_message("Expected exactly 7 doubles for joint positions");
             return Status::OK;
         }
         {
             std::lock_guard<std::mutex> lk(s_.mtx);
-            for (int i = 0; i < 16; ++i)
-                s_.goal_pose[i] = req->pose(i);
+            for (int i = 0; i < 7; ++i)
+                s_.goal_q[i] = req->q(i);
             ++s_.goal_seq;
         }
         rep->set_success(true);
@@ -96,9 +96,9 @@ public:
         std::lock_guard<std::mutex> lk(s_.mtx);
         for (double v : s_.current_pose) rep->add_pose(v);
         for (double v : s_.current_q)    rep->add_q(v);
-        // target_pose = current interpolated command, useful as baseline for
-        // the Python client's next SetCartesianTarget call.
-        for (double v : s_.target_pose)  rep->add_target_pose(v);
+        // target_q = current interpolated joint command, useful as baseline for
+        // the Python client's next SetJointTarget call.
+        for (double v : s_.target_q)     rep->add_target_q(v);
         rep->set_cmd_success_rate(s_.cmd_success_rate);
         rep->set_ready(s_.ready);
         rep->set_error(s_.error);
@@ -168,15 +168,15 @@ int main(int argc, char** argv) {
     franka::Robot robot(robot_ip);
     std::cout << "[franka_server] Connected." << std::endl;
 
-    // ── libfranka Cartesian pose control loop (with auto-recovery) ──────────
+    // ── libfranka joint position control loop (with auto-recovery) ──────────
     //
     // The callback runs at 1 kHz.  It does NOT call gRPC — it only reads
-    // goal_pose / goal_seq from SharedState (mutex, fast) and does arithmetic.
+    // goal_q / goal_seq from SharedState (mutex, fast) and does arithmetic.
     //
     // Interpolation state (RT-private, no mutex needed):
-    //   interp_start  – pose at the beginning of the current segment
-    //   interp_goal   – pose at the end of the current segment (= last goal_pose)
-    //   interp_pose   – current interpolated command, sent to the robot
+    //   interp_start  – joints at the beginning of the current segment
+    //   interp_goal   – joints at the end of the current segment (= last goal_q)
+    //   interp_q      – current interpolated command, sent to the robot
     //   interp_tick   – ticks elapsed in this segment  [0 .. interp_N]
     //   last_goal_seq – goal_seq value when interp_goal was last set
     //
@@ -195,63 +195,65 @@ int main(int argc, char** argv) {
         robot.setCartesianImpedance({{3000, 3000, 3000, 300, 300, 300}});
 
         // RT-private interpolation state — reset on each outer loop iteration.
-        std::array<double, 16> interp_start{};
-        std::array<double, 16> interp_goal{};
-        std::array<double, 16> interp_pose{};
-        int      interp_tick    = 0;
-        uint64_t last_goal_seq  = 0;
+        std::array<double, 7> interp_start{};
+        std::array<double, 7> interp_goal{};
+        std::array<double, 7> interp_q{};
+        int      interp_tick   = 0;
+        uint64_t last_goal_seq = 0;
 
         try {
             robot.control(
                 [&](const franka::RobotState& rs,
-                    franka::Duration) -> franka::CartesianPose
+                    franka::Duration) -> franka::JointPositions
                 {
                     // ── Lock shared state (minimal critical section) ───────
                     std::lock_guard<std::mutex> lk(state.mtx);
 
                     // ── Initialise on first callback ───────────────────────
                     if (!control_initialized) {
-                        // Seed everything from the robot's current commanded
-                        // pose so there is zero discontinuity at startup.
-                        interp_start = rs.O_T_EE_d;
-                        interp_goal  = rs.O_T_EE_d;
-                        interp_pose  = rs.O_T_EE_d;
+                        // Seed everything from the robot's current actual joint
+                        // positions so there is zero discontinuity at startup.
+                        interp_start = rs.q;
+                        interp_goal  = rs.q;
+                        interp_q     = rs.q;
                         interp_tick  = interp_N;   // already "arrived"
 
-                        // Publish goal_pose so Python can read a valid baseline
+                        // Publish goal_q so Python can read a valid baseline
                         // from GetRobotState before sending the first target.
-                        state.goal_pose   = rs.O_T_EE_d;
-                        state.target_pose = rs.O_T_EE_d;
-                        last_goal_seq     = state.goal_seq;
+                        state.goal_q   = rs.q;
+                        state.target_q = rs.q;
+                        last_goal_seq  = state.goal_seq;
 
                         state.ready = true;
                         control_initialized = true;
-                        std::cout << "[franka_server] Control loop started. EE z = "
-                                  << rs.O_T_EE[14] << " m" << std::endl;
+                        std::cout << "[franka_server] Control loop started. q = ["
+                                  << rs.q[0] << ", " << rs.q[1] << ", " << rs.q[2] << ", "
+                                  << rs.q[3] << ", " << rs.q[4] << ", " << rs.q[5] << ", "
+                                  << rs.q[6] << "]" << std::endl;
                     }
 
                     // ── Detect new waypoint from Python ───────────────────
                     if (state.goal_seq != last_goal_seq) {
                         // A new goal has arrived.  Start a fresh segment from
-                        // wherever we currently are (interp_pose), so the arm
+                        // wherever we currently are (interp_q), so the arm
                         // never jumps.
-                        interp_start   = interp_pose;
-                        interp_goal    = state.goal_pose;
-                        interp_tick    = 0;
-                        last_goal_seq  = state.goal_seq;
+                        interp_start  = interp_q;
+                        interp_goal   = state.goal_q;
+                        interp_tick   = 0;
+                        last_goal_seq = state.goal_seq;
                     }
 
                     // ── Advance linear interpolation ──────────────────────
                     // interp_tick counts ticks elapsed in the current segment.
-                    // Clamp at interp_N so the arm holds the goal pose once
-                    // reached (until the next waypoint arrives).
+                    // Clamp at interp_N so the arm holds the goal once reached
+                    // (until the next waypoint arrives).
                     if (interp_tick < interp_N) {
                         ++interp_tick;
                     }
                     const double alpha = static_cast<double>(interp_tick) / interp_N;
-                    for (int i = 0; i < 16; ++i) {
-                        interp_pose[i] = interp_start[i]
-                                         + alpha * (interp_goal[i] - interp_start[i]);
+                    for (int i = 0; i < 7; ++i) {
+                        interp_q[i] = interp_start[i]
+                                      + alpha * (interp_goal[i] - interp_start[i]);
                     }
 
                     // ── Update telemetry ──────────────────────────────────
@@ -259,51 +261,44 @@ int main(int argc, char** argv) {
                     state.current_q        = rs.q;
                     state.cmd_success_rate = rs.control_command_success_rate;
                     // Publish the interpolated command so Python's
-                    // GetRobotState("target_pose") sees where the arm is
-                    // actually heading this tick.
-                    state.target_pose = interp_pose;
+                    // GetRobotState("target_q") sees where the arm is heading.
+                    state.target_q = interp_q;
 
                     // ── Finish motion if stop requested ───────────────────
                     if (state.stop) {
-                        franka::CartesianPose p(interp_pose);
+                        franka::JointPositions p(interp_q);
                         p.motion_finished = true;
                         return p;
                     }
 
-                    return franka::CartesianPose(interp_pose);
-                },
-                franka::ControllerMode::kJointImpedance,
-                true,   // limit_rate
-                100.0   // cutoff_frequency [Hz]
+                    return franka::JointPositions(interp_q);
+                }
             );
 
         } catch (const franka::ControlException& e) {
             std::cerr << "[franka_server] Control exception: " << e.what() << std::endl;
             {
                 std::lock_guard<std::mutex> lk(state.mtx);
-                const auto& cp = state.current_pose;  // O_T_EE (actual)
-                const auto& tp = interp_pose;          // last commanded (no mutex needed — RT-private)
-                const double dx = tp[12] - cp[12];
-                const double dy = tp[13] - cp[13];
-                const double dz = tp[14] - cp[14];
-                const double dist_mm = std::sqrt(dx*dx + dy*dy + dz*dz) * 1000.0;
+                const auto& cq = state.current_q;  // actual joint positions
+                const auto& tq = interp_q;          // last commanded (RT-private, no mutex needed)
                 std::cerr << std::fixed << std::setprecision(6)
-                    << "[franka_server]   commanded (interp_pose):"
-                    << "  pos=(" << tp[12] << ", " << tp[13] << ", " << tp[14] << ")"
-                    << "  R=[" << tp[0] << "," << tp[1] << "," << tp[2] << " | "
-                               << tp[4] << "," << tp[5] << "," << tp[6] << " | "
-                               << tp[8] << "," << tp[9] << "," << tp[10] << "]"
-                    << "\n[franka_server]   actual    (O_T_EE):    "
-                    << "  pos=(" << cp[12] << ", " << cp[13] << ", " << cp[14] << ")"
-                    << "  R=[" << cp[0] << "," << cp[1] << "," << cp[2] << " | "
-                               << cp[4] << "," << cp[5] << "," << cp[6] << " | "
-                               << cp[8] << "," << cp[9] << "," << cp[10] << "]"
-                    << "\n[franka_server]   delta (cmd - actual):"
-                    << "  dpos=(" << dx << ", " << dy << ", " << dz << ")"
-                    << "  |dpos|=" << std::setprecision(3) << dist_mm << " mm"
+                    << "[franka_server]   commanded (interp_q): ["
+                    << tq[0] << ", " << tq[1] << ", " << tq[2] << ", "
+                    << tq[3] << ", " << tq[4] << ", " << tq[5] << ", " << tq[6] << "]"
+                    << "\n[franka_server]   actual    (q):        ["
+                    << cq[0] << ", " << cq[1] << ", " << cq[2] << ", "
+                    << cq[3] << ", " << cq[4] << ", " << cq[5] << ", " << cq[6] << "]"
+                    << "\n[franka_server]   delta (cmd - actual): [";
+                double max_delta = 0.0;
+                for (int i = 0; i < 7; ++i) {
+                    double d = tq[i] - cq[i];
+                    if (std::abs(d) > max_delta) max_delta = std::abs(d);
+                    std::cerr << d;
+                    if (i < 6) std::cerr << ", ";
+                }
+                std::cerr << "]  max_delta=" << std::setprecision(4) << max_delta << " rad"
                     << "  interp_tick=" << interp_tick << "/" << interp_N
-                    << "  alpha=" << std::setprecision(4)
-                    << static_cast<double>(interp_tick) / interp_N
+                    << "  alpha=" << static_cast<double>(interp_tick) / interp_N
                     << std::endl;
                 state.ready = false;
             }

@@ -2,7 +2,7 @@
 FrankaDirectClient — Python gRPC client for franka_server.
 
 Connects to the C++ franka_server that drives the robot via libfranka's
-built-in Cartesian impedance controller (no Polymetis, no IK, no TorchScript).
+joint position controller (no Polymetis, no IK, no TorchScript).
 """
 
 import os
@@ -31,20 +31,20 @@ class FrankaDirectClient:
         """
         Returns dict with keys:
             pose              – list[16] col-major O_T_EE (actual measured pose)
-            target_pose       – list[16] col-major current commanded target
-            q                 – list[7]  joint positions
+            q                 – list[7]  actual measured joint positions (rad)
+            target_q          – list[7]  current interpolated joint command (rad)
             cmd_success_rate  – float in [0, 1]
             ready             – bool
             error             – str (empty if OK)
 
-        Use ``target_pose`` (not ``pose``) as the starting point for new
-        SetCartesianTarget calls to avoid velocity discontinuities.
+        Use ``target_q`` (not ``q``) as the starting point for new
+        SetJointTarget calls to avoid velocity discontinuities.
         """
         resp = self.stub.GetRobotState(pb2.Empty(), timeout=self.timeout)
         return {
             "pose":             list(resp.pose),
-            "target_pose":      list(resp.target_pose),
             "q":                list(resp.q),
+            "target_q":         list(resp.target_q),
             "cmd_success_rate": resp.cmd_success_rate,
             "ready":            resp.ready,
             "error":            resp.error,
@@ -67,18 +67,17 @@ class FrankaDirectClient:
 
     # ── Control ────────────────────────────────────────────────────────────
 
-    def set_cartesian_target(self, pose_16: list):
+    def set_joint_target(self, q_7: list):
         """
-        Set desired EE pose.
+        Set desired joint positions.
 
         Args:
-            pose_16: 16-element list, column-major O_T_EE homogeneous matrix.
-                     Translation is at indices 12 (x), 13 (y), 14 (z).
+            q_7: 7-element list of joint positions in radians.
         Returns:
             (success: bool, message: str)
         """
-        req  = pb2.CartesianTarget(pose=list(pose_16))
-        resp = self.stub.SetCartesianTarget(req, timeout=self.timeout)
+        req  = pb2.JointTarget(q=list(q_7))
+        resp = self.stub.SetJointTarget(req, timeout=self.timeout)
         return resp.success, resp.message
 
     def stop(self):
