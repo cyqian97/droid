@@ -144,13 +144,30 @@ def main():
         sys.exit(1)
 
     # === Step 4: Optionally reset robot to home ================================
+    # Home position matches simple_teleop.py reset_joints
+    HOME_Q = [0.0, -np.pi / 5, 0.0, -4 * np.pi / 5, 0.0, 3 * np.pi / 5, 0.0]
+
     if not args.no_reset:
         print("Resetting robot to home position ...")
-        home_q = [0, -np.pi / 5, 0, -4 * np.pi / 5, 0, 3 * np.pi / 5, 0.0]
-        client.set_joint_target(home_q)
-        # Wait long enough for the robot to reach home (worst-case ~3 s)
-        time.sleep(4.0)
-        print("[OK] Robot at home position")
+        client.set_joint_target(HOME_Q)
+        # Poll until the robot arrives (server now tracks at max_step after
+        # interp window, so one send is enough for any distance).
+        home_arr = np.array(HOME_Q)
+        deadline = time.time() + 15.0
+        while time.time() < deadline:
+            s = client.get_robot_state()
+            if s["error"]:
+                print(f"[FAIL] Robot error during reset: {s['error']}")
+                sys.exit(1)
+            err = np.max(np.abs(np.array(s["q"]) - home_arr))
+            sys.stdout.write(f"\r  Moving to home ... max joint error = {np.rad2deg(err):.2f} deg   ")
+            sys.stdout.flush()
+            if err < np.deg2rad(3):   # within 3 degrees on all joints
+                break
+            time.sleep(0.1)
+        else:
+            print("\n[WARN] Reset timed out — robot may not be at home")
+        print("\n[OK] Robot at home position")
     else:
         print("[SKIP] Robot reset skipped (--no_reset)")
 
@@ -177,7 +194,7 @@ def main():
     step_count  = 0
     gripper_pos = 0.0   # tracked locally; franka_server has no gripper output
 
-    # Seed target_q from current server state
+    # Seed target_q from current server state (after reset, this is near HOME_Q)
     init_state = client.get_robot_state()
     target_q   = np.array(init_state["target_q"])
 

@@ -378,9 +378,12 @@ int main(int argc, char** argv) {
 
                     // ── Interpolate interp_q toward goal_q ────────────────
                     //
-                    // On new 25 Hz command: reset ticks_remaining = interp_N.
-                    // step = (goal_q - interp_q) / ticks_remaining  ← constant/period
-                    // step = clamp(step, ±max_step)                 ← safety cap
+                    // On new command: reset ticks_remaining = interp_N so the
+                    // move is spread over one policy period (smooth start).
+                    // After ticks_remaining expires: continue tracking at
+                    // max_step per tick until goal is actually reached.
+                    // This lets a single set_joint_target() drive the robot
+                    // all the way to the target regardless of distance.
                     if (state.goal_seq != last_goal_seq) {
                         last_goal_seq   = state.goal_seq;
                         ticks_remaining = interp_N;
@@ -388,7 +391,8 @@ int main(int argc, char** argv) {
                     const auto& gq = state.goal_q;
                     for (int i = 0; i < 7; ++i) {
                         double d    = gq[i] - interp_q[i];
-                        double step = (ticks_remaining > 0) ? d / ticks_remaining : 0.0;
+                        // During interp window: divide evenly; after: chase at max rate.
+                        double step = (ticks_remaining > 0) ? d / ticks_remaining : d;
                         interp_q[i] += std::max(-max_step, std::min(step, max_step));
                     }
                     if (ticks_remaining > 0) --ticks_remaining;
