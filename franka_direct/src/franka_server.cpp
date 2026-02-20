@@ -350,8 +350,6 @@ int main(int argc, char** argv) {
     const double      policy_hz  = (argc > 3) ? std::stod(argv[3]) : 25.0;
     const std::string config_path = (argc > 4) ? argv[4] : "";
 
-    const int interp_N = static_cast<int>(std::round(1000.0 / policy_hz));
-
     // ── Load controller parameters from YAML (or use built-in defaults) ──────
     ControllerConfig cfg;
     if (!config_path.empty()) {
@@ -377,7 +375,6 @@ int main(int argc, char** argv) {
     const double lpf_gain = dt / (dt + 1.0 / (2.0 * M_PI * cfg.lpf_cutoff));
 
     std::cout << "[franka_server] policy_hz=" << policy_hz
-              << "  interp_N=" << interp_N << " ticks/waypoint"
               << "  max_step=" << max_step << " rad/tick"
               << "  lpf_cutoff=" << cfg.lpf_cutoff << " Hz (gain=" << lpf_gain << ")\n"
               << "[franka_server] Kp:        [";
@@ -458,8 +455,6 @@ int main(int argc, char** argv) {
         // RT-private state — reset on each outer loop iteration.
         std::array<double, 7> interp_q     = rs0.q;  // seeded from actual position
         std::array<double, 7> filtered_tau = {};      // LPF state, zero-initialised
-        uint64_t last_goal_seq  = 0;
-        int  ticks_remaining    = 0;
         uint64_t tick           = 0;
 
         // Update shared telemetry with the fresh read.
@@ -495,26 +490,16 @@ int main(int argc, char** argv) {
                     // ── Lock shared state ──────────────────────────────────
                     std::lock_guard<std::mutex> lk(state.mtx);
 
-                    // ── Interpolate interp_q toward goal_q ────────────────
+                    // ── Rate-limit interp_q toward goal_q ────────────────
                     //
-                    // On new command: reset ticks_remaining = interp_N so the
-                    // move is spread over one policy period (smooth start).
-                    // After ticks_remaining expires: continue tracking at
-                    // max_step per tick until goal is actually reached.
-                    // This lets a single set_joint_target() drive the robot
-                    // all the way to the target regardless of distance.
-                    if (state.goal_seq != last_goal_seq) {
-                        last_goal_seq   = state.goal_seq;
-                        ticks_remaining = interp_N;
-                    }
+                    // Chase goal_q at max_step (rad/tick) every tick.
+                    // No interpolation window — the impedance controller and
+                    // torque LPF provide all the smoothing needed.
                     const auto& gq = state.goal_q;
                     for (int i = 0; i < 7; ++i) {
-                        double d    = gq[i] - interp_q[i];
-                        // During interp window: divide evenly; after: chase at max rate.
-                        double step = (ticks_remaining > 0) ? d / ticks_remaining : d;
-                        interp_q[i] += std::max(-max_step, std::min(step, max_step));
+                        double d = gq[i] - interp_q[i];
+                        interp_q[i] += std::max(-max_step, std::min(d, max_step));
                     }
-                    if (ticks_remaining > 0) --ticks_remaining;
                     ++tick;
 
                     // ── Joint impedance torque (DefaultController formula) ─
