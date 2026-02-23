@@ -2,8 +2,26 @@
 # Launch franka_server inside the Docker container.
 # This replaces Polymetis — do NOT run launch_robot.sh at the same time.
 #
-# Run from the host:
+# Usage (from the host):
 #   docker exec <container> bash /app/droid/franka_direct/launch_server.sh
+#
+# All parameters are optional environment variables:
+#   ROBOT_IP     Robot IP address              (default: 192.168.1.11)
+#   GRPC_ADDR    gRPC listen address           (default: 0.0.0.0:50052)
+#   POLICY_HZ    Policy frequency in Hz        (default: 25)
+#   CONFIG_FILE  Path to controller YAML       (default: config/controller.yaml)
+#
+# Examples:
+#   # Use all defaults
+#   docker exec <container> bash /app/droid/franka_direct/launch_server.sh
+#
+#   # Custom robot IP and policy frequency
+#   docker exec <container> env ROBOT_IP=192.168.1.12 POLICY_HZ=15 \
+#       bash /app/droid/franka_direct/launch_server.sh
+#
+#   # Custom config file
+#   docker exec <container> env CONFIG_FILE=/app/droid/franka_direct/config/my_config.yaml \
+#       bash /app/droid/franka_direct/launch_server.sh
 set -eo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
