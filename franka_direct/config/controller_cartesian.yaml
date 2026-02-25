@@ -11,7 +11,7 @@
 
 # Position proportional gain [1/s]
 # Higher → faster tracking but more aggressive.  3.0 is a good starting point.
-kp_lin: 3.0
+kp_lin: 14.0
 
 # Linear velocity damping gain (dimensionless)
 # Reduces velocity when already moving fast.  Prevents overshoot.
