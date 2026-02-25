@@ -116,16 +116,43 @@ static Vec3 rotation_error(const Mat3& Re) {
 // ── Controller config (loaded from YAML at startup) ──────────────────────────
 
 struct ControllerConfig {
-    double kp_lin      = 3.0;    // position P gain [1/s]
-    double kd_lin      = 0.5;    // linear velocity damping
+    // Per-axis linear PD gains.  If kp_x/y/z are not set in YAML,
+    // they default to kp_lin (and similarly for kd).
+    double kp_lin      = 3.0;    // fallback P gain [1/s]
+    double kd_lin      = 0.5;    // fallback D gain
+    double kp_x        = -1;     // per-axis overrides (-1 = use kp_lin)
+    double kp_y        = -1;
+    double kp_z        = -1;
+    double kd_x        = -1;
+    double kd_y        = -1;
+    double kd_z        = -1;
     double kp_rot      = 2.0;    // orientation P gain [1/s]
     double kd_rot      = 0.3;    // angular velocity damping
     double max_lin_vel = 0.5;    // clamp [m/s]
     double max_rot_vel = 2.5;    // clamp [rad/s]
     double cutoff_freq = 100.0;  // libfranka internal velocity LPF [Hz]
+    double ramp_duration = 0.5;  // velocity ramp-up/down duration [s]
     double gripper_force   =  20.0;
     double gripper_eps_in  =  0.08;
     double gripper_eps_out =  0.08;
+
+    // Initial joint configuration.  If non-empty, the robot moves here
+    // (using a smooth joint-space motion generator) before entering the
+    // Cartesian velocity control loop.
+    std::array<double, 7> init_q{};
+    bool   has_init_q     = false;
+    double init_speed     = 0.3;   // fraction of max joint velocity [0..1]
+    double init_duration  = 5.0;   // max seconds for the move
+
+    // Resolve per-axis gains: use explicit override if set, else fallback.
+    void resolve() {
+        if (kp_x < 0) kp_x = kp_lin;
+        if (kp_y < 0) kp_y = kp_lin;
+        if (kp_z < 0) kp_z = kp_lin;
+        if (kd_x < 0) kd_x = kd_lin;
+        if (kd_y < 0) kd_y = kd_lin;
+        if (kd_z < 0) kd_z = kd_lin;
+    }
 };
 
 static std::string cfg_trim(const std::string& s) {
@@ -153,16 +180,108 @@ static ControllerConfig load_config(const std::string& path) {
         if (val.empty()) continue;
         if      (key == "kp_lin")          cfg.kp_lin          = std::stod(val);
         else if (key == "kd_lin")          cfg.kd_lin          = std::stod(val);
+        else if (key == "kp_x")            cfg.kp_x            = std::stod(val);
+        else if (key == "kp_y")            cfg.kp_y            = std::stod(val);
+        else if (key == "kp_z")            cfg.kp_z            = std::stod(val);
+        else if (key == "kd_x")            cfg.kd_x            = std::stod(val);
+        else if (key == "kd_y")            cfg.kd_y            = std::stod(val);
+        else if (key == "kd_z")            cfg.kd_z            = std::stod(val);
         else if (key == "kp_rot")          cfg.kp_rot          = std::stod(val);
         else if (key == "kd_rot")          cfg.kd_rot          = std::stod(val);
         else if (key == "max_lin_vel")     cfg.max_lin_vel     = std::stod(val);
         else if (key == "max_rot_vel")     cfg.max_rot_vel     = std::stod(val);
         else if (key == "cutoff_freq")     cfg.cutoff_freq     = std::stod(val);
+        else if (key == "ramp_duration")   cfg.ramp_duration   = std::stod(val);
+        else if (key == "init_speed")      cfg.init_speed      = std::stod(val);
+        else if (key == "init_duration")   cfg.init_duration   = std::stod(val);
         else if (key == "gripper_force")   cfg.gripper_force   = std::stod(val);
         else if (key == "gripper_eps_in")  cfg.gripper_eps_in  = std::stod(val);
         else if (key == "gripper_eps_out") cfg.gripper_eps_out = std::stod(val);
+        else if (key == "init_q") {
+            // Parse comma-separated list of 7 doubles
+            std::istringstream ss(val);
+            std::string tok;
+            int i = 0;
+            while (std::getline(ss, tok, ',') && i < 7) {
+                cfg.init_q[i++] = std::stod(cfg_trim(tok));
+            }
+            if (i == 7) cfg.has_init_q = true;
+            else std::cerr << "[cartesian_server] Warning: init_q needs 7 values, got " << i << std::endl;
+        }
     }
+    cfg.resolve();
     return cfg;
+}
+
+// ── Joint-space motion generator ─────────────────────────────────────────
+//
+// Moves the robot to a target joint configuration using a cosine
+// interpolation profile.  Velocity and acceleration are exactly zero at
+// both endpoints → no discontinuity reflexes.
+//
+//   q(t) = q_start + (q_goal - q_start) * 0.5 * (1 - cos(pi * t / T))
+//
+// Total duration T is computed per-joint from max velocity (scaled by
+// speed_factor), then synchronized to the slowest joint.
+
+static void move_to_joint_pose(franka::Robot& robot,
+                                const std::array<double, 7>& q_goal,
+                                double speed_factor,
+                                double max_duration) {
+    // FR3 max joint velocities [rad/s] (from datasheet, conservative).
+    constexpr std::array<double, 7> dq_max = {2.175, 2.175, 2.175, 2.175, 2.61, 2.61, 2.61};
+
+    robot.setCollisionBehavior(
+        {{20.0, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0}},
+        {{20.0, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0}},
+        {{10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0}},
+        {{10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0}},
+        {{20.0, 20.0, 20.0, 20.0, 20.0, 20.0}},
+        {{20.0, 20.0, 20.0, 20.0, 20.0, 20.0}},
+        {{10.0, 10.0, 10.0, 10.0, 10.0, 10.0}},
+        {{10.0, 10.0, 10.0, 10.0, 10.0, 10.0}});
+
+    std::array<double, 7> q_start{};
+    double T = 0.0;   // synchronized duration
+    double t = 0.0;
+    bool   first_tick = true;
+
+    robot.control(
+        [&](const franka::RobotState& rs, franka::Duration period) -> franka::JointPositions {
+            t += period.toSec();
+
+            if (first_tick) {
+                first_tick = false;
+                // First tick: capture start pose and compute duration.
+                q_start = rs.q;
+
+                // Per-joint time based on distance / (speed_factor * max_vel).
+                // The cosine profile has peak velocity = pi/(2*T) * delta_q,
+                // so T_j = pi * |delta_q_j| / (2 * speed_factor * dq_max_j).
+                for (int i = 0; i < 7; ++i) {
+                    double dq = std::abs(q_goal[i] - q_start[i]);
+                    double Tj = M_PI * dq / (2.0 * speed_factor * dq_max[i]);
+                    if (Tj > T) T = Tj;
+                }
+                // Enforce minimum duration (avoid div-by-zero if already there).
+                T = std::max(T, 0.5);
+                T = std::min(T, max_duration);
+                std::cout << "[cartesian_server] Moving to init_q (T=" << T << " s)..." << std::endl;
+            }
+
+            double frac = std::min(t / T, 1.0);
+            double alpha = 0.5 * (1.0 - std::cos(M_PI * frac));
+
+            std::array<double, 7> q_cmd;
+            for (int i = 0; i < 7; ++i)
+                q_cmd[i] = q_start[i] + (q_goal[i] - q_start[i]) * alpha;
+
+            franka::JointPositions output(q_cmd);
+            if (frac >= 1.0) {
+                output.motion_finished = true;
+            }
+            return output;
+        });
 }
 
 // ── Gripper shared state ─────────────────────────────────────────────────────
@@ -401,20 +520,29 @@ int main(int argc, char** argv) {
         std::cout << "[cartesian_server] No config — using built-in defaults." << std::endl;
     }
 
-    const double kp_lin      = cfg.kp_lin;
-    const double kd_lin      = cfg.kd_lin;
+    // Resolve per-axis gains (needed if no config file).
+    cfg.resolve();
+
+    const double kp_x        = cfg.kp_x;
+    const double kp_y        = cfg.kp_y;
+    const double kp_z        = cfg.kp_z;
+    const double kd_x        = cfg.kd_x;
+    const double kd_y        = cfg.kd_y;
+    const double kd_z        = cfg.kd_z;
     const double kp_rot      = cfg.kp_rot;
     const double kd_rot      = cfg.kd_rot;
     const double max_lin_vel = cfg.max_lin_vel;
     const double max_rot_vel = cfg.max_rot_vel;
+    const uint64_t ramp_ticks = std::max(uint64_t(1),
+                                        static_cast<uint64_t>(cfg.ramp_duration * 1000));
 
-    std::cout << "[cartesian_server] PD gains: kp_lin=" << kp_lin
-              << "  kd_lin=" << kd_lin
-              << "  kp_rot=" << kp_rot
-              << "  kd_rot=" << kd_rot
+    std::cout << "[cartesian_server] PD gains: kp=[" << kp_x << ", " << kp_y << ", " << kp_z << "]"
+              << "  kd=[" << kd_x << ", " << kd_y << ", " << kd_z << "]"
+              << "  kp_rot=" << kp_rot << "  kd_rot=" << kd_rot
               << "\n[cartesian_server] Velocity limits: lin=" << max_lin_vel
               << " m/s  rot=" << max_rot_vel
-              << " rad/s  cutoff=" << cfg.cutoff_freq << " Hz" << std::endl;
+              << " rad/s  cutoff=" << cfg.cutoff_freq << " Hz"
+              << "  ramp=" << cfg.ramp_duration << " s" << std::endl;
 
     SharedState        state;
     GripperSharedState gripper_state;
@@ -433,6 +561,34 @@ int main(int argc, char** argv) {
     std::cout << "[cartesian_server] Connecting to robot at " << robot_ip << " ..." << std::endl;
     franka::Robot robot(robot_ip);
     std::cout << "[cartesian_server] Connected." << std::endl;
+
+    // ── Move to initial joint configuration (if specified) ──────────────────
+    if (cfg.has_init_q) {
+        std::cout << "[cartesian_server] init_q: [";
+        for (int i = 0; i < 7; ++i) std::cout << (i ? ", " : "") << cfg.init_q[i];
+        std::cout << "]  speed=" << cfg.init_speed << std::endl;
+
+        franka::RobotState rs0 = robot.readOnce();
+        double max_delta = 0;
+        for (int i = 0; i < 7; ++i)
+            max_delta = std::max(max_delta, std::abs(cfg.init_q[i] - rs0.q[i]));
+
+        if (max_delta < 1e-3) {
+            std::cout << "[cartesian_server] Already at init_q (max delta "
+                      << max_delta << " rad), skipping move." << std::endl;
+        } else {
+            std::cout << "[cartesian_server] Max joint delta: " << max_delta
+                      << " rad.  Moving to init_q..." << std::endl;
+            try {
+                move_to_joint_pose(robot, cfg.init_q, cfg.init_speed, cfg.init_duration);
+                std::cout << "[cartesian_server] Reached init_q." << std::endl;
+            } catch (const franka::Exception& e) {
+                std::cerr << "[cartesian_server] Failed to move to init_q: " << e.what() << std::endl;
+                try { robot.automaticErrorRecovery(); } catch (...) {}
+                std::cerr << "[cartesian_server] Continuing from current pose." << std::endl;
+            }
+        }
+    }
 
     // Seed shared state from initial robot state.
     {
@@ -481,6 +637,8 @@ int main(int argc, char** argv) {
         robot.setJointImpedance({{3000, 3000, 3000, 2500, 2500, 2000, 2000}});
 
         uint64_t tick = 0;
+        bool     ramping_down = false;
+        uint64_t ramp_down_start = 0;
 
         // Update shared telemetry from fresh read.
         {
@@ -525,10 +683,10 @@ int main(int argc, char** argv) {
                     const auto& v = rs.O_dP_EE_c;
                     // v[0..2] = linear velocity, v[3..5] = angular velocity
 
-                    // ── PD controller ────────────────────────────────────
-                    double vx = kp_lin * ex - kd_lin * v[0];
-                    double vy = kp_lin * ey - kd_lin * v[1];
-                    double vz = kp_lin * ez - kd_lin * v[2];
+                    // ── PD controller (per-axis linear gains) ────────────
+                    double vx = kp_x * ex - kd_x * v[0];
+                    double vy = kp_y * ey - kd_y * v[1];
+                    double vz = kp_z * ez - kd_z * v[2];
 
                     double wx = kp_rot * rot_err.x - kd_rot * v[3];
                     double wy = kp_rot * rot_err.y - kd_rot * v[4];
@@ -548,6 +706,35 @@ int main(int argc, char** argv) {
                         wx *= s; wy *= s; wz *= s;
                     }
 
+                    // ── Velocity ramp ────────────────────────────────────
+                    // Ramp up from zero on startup so the velocity doesn't
+                    // jump discontinuously.  Ramp down to zero on stop so
+                    // motion_finished is only set once velocity ≈ 0.
+                    double ramp = 1.0;
+
+                    if (!ramping_down && state.stop.load()) {
+                        ramping_down    = true;
+                        ramp_down_start = tick;
+                    }
+
+                    if (ramping_down) {
+                        uint64_t dt = tick - ramp_down_start;
+                        if (dt >= ramp_ticks) {
+                            std::array<double, 6> zero_vel = {0, 0, 0, 0, 0, 0};
+                            franka::CartesianVelocities cv(zero_vel);
+                            cv.motion_finished = true;
+                            return cv;
+                        }
+                        // Cosine ramp down: 1 → 0
+                        ramp = 0.5 * (1.0 + std::cos(M_PI * dt / ramp_ticks));
+                    } else if (tick < ramp_ticks) {
+                        // Cosine ramp up: 0 → 1
+                        ramp = 0.5 * (1.0 - std::cos(M_PI * tick / ramp_ticks));
+                    }
+
+                    vx *= ramp; vy *= ramp; vz *= ramp;
+                    wx *= ramp; wy *= ramp; wz *= ramp;
+
                     // ── Update telemetry under lock ──────────────────────
                     {
                         std::lock_guard<std::mutex> lk(state.mtx);
@@ -557,14 +744,6 @@ int main(int argc, char** argv) {
                         state.cmd_success_rate = rs.control_command_success_rate;
                     }
                     ++tick;
-
-                    // ── Stop if requested ────────────────────────────────
-                    if (state.stop) {
-                        std::array<double, 6> zero_vel = {0, 0, 0, 0, 0, 0};
-                        franka::CartesianVelocities cv(zero_vel);
-                        cv.motion_finished = true;
-                        return cv;
-                    }
 
                     std::array<double, 6> cmd_vel = {vx, vy, vz, wx, wy, wz};
                     return franka::CartesianVelocities(cmd_vel);
