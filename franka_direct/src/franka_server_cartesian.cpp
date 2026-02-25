@@ -560,12 +560,14 @@ int main(int argc, char** argv) {
 
                     // ── Stop if requested ────────────────────────────────
                     if (state.stop) {
-                        franka::CartesianVelocities cv({{0, 0, 0, 0, 0, 0}});
+                        std::array<double, 6> zero_vel = {0, 0, 0, 0, 0, 0};
+                        franka::CartesianVelocities cv(zero_vel);
                         cv.motion_finished = true;
                         return cv;
                     }
 
-                    return franka::CartesianVelocities({{vx, vy, vz, wx, wy, wz}});
+                    std::array<double, 6> cmd_vel = {vx, vy, vz, wx, wy, wz};
+                    return franka::CartesianVelocities(cmd_vel);
                 },
                 franka::ControllerMode::kJointImpedance,
                 true,               // limit_rate — prevents velocity discontinuities
