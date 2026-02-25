@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
 """
-Simple Downward Motion using direct libfranka Cartesian pose control.
+Simple Downward Motion using direct libfranka Cartesian velocity control.
 
-Bypasses Polymetis entirely — sends O_T_EE targets directly to franka_server
-(C++ gRPC server) at 25 Hz.  The robot's built-in Cartesian impedance
-controller (kJointImpedance mode) handles the 1 kHz servo loop with no gRPC
-inside the RT callback.
+Bypasses Polymetis entirely — sends O_T_EE pose targets to
+franka_server_cartesian (C++ gRPC server) at 25 Hz.  The server runs a PD
+controller at 1 kHz converting pose error to Cartesian velocity commands.
 
 Prerequisites:
-  1. Build franka_server inside Docker:
+  1. Build inside Docker:
        docker exec <container> bash /app/droid/franka_direct/build.sh
   2. Generate Python stubs (on the laptop):
        bash franka_direct/python/generate_stubs.sh
-  3. Launch franka_server (do NOT run launch_robot.sh at the same time):
-       docker exec <container> bash /app/droid/franka_direct/launch_server.sh
+  3. Launch the Cartesian server (do NOT run launch_robot.sh at the same time):
+       docker exec <container> bash /app/droid/franka_direct/launch_server_cartesian.sh
   4. Run this script on the laptop:
        python scripts/simple_downward_direct.py
 """
@@ -139,14 +138,14 @@ def main():
 
             # Send target
             t0 = time.monotonic()
-            ok, msg = client.set_cartesian_target(target_pose)
+            ok, msg = client.set_ee_target(target_pose)
             rpc_ms = (time.monotonic() - t0) * 1000
             rpc_times.append(rpc_ms)
             if rpc_ms > period * 1000 * 2:
                 slow_steps.append((step + 1, rpc_ms))
 
             if not ok:
-                print(f"\n[ERROR] SetCartesianTarget failed: {msg}")
+                print(f"\n[ERROR] SetEETarget failed: {msg}")
                 break
 
             # Read back for diagnostics
@@ -191,7 +190,7 @@ def main():
 
     if rpc_times:
         rt = np.array(rpc_times)
-        print(f"\n  SET_CARTESIAN_TARGET RPC (laptop→franka_server gRPC):")
+        print(f"\n  SET_EE_TARGET RPC (laptop→franka_server_cartesian gRPC):")
         print(f"    Mean:   {rt.mean():>7.2f} ms")
         print(f"    Median: {np.median(rt):>7.2f} ms")
         print(f"    p90:    {np.percentile(rt, 90):>7.2f} ms")
@@ -210,7 +209,7 @@ def main():
 
     if get_state_times:
         gs = np.array(get_state_times)
-        print(f"\n  GET_ROBOT_STATE RPC (laptop→franka_server gRPC):")
+        print(f"\n  GET_ROBOT_STATE RPC (laptop→franka_server_cartesian gRPC):")
         print(f"    Mean:   {gs.mean():>7.2f} ms")
         print(f"    Median: {np.median(gs):>7.2f} ms")
         print(f"    p95:    {np.percentile(gs, 95):>7.2f} ms")

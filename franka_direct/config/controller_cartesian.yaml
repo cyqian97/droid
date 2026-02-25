@@ -1,0 +1,43 @@
+# Cartesian velocity server PD controller parameters.
+# Edit this file and restart the server to apply changes (no rebuild needed).
+#
+# The server computes Cartesian velocity commands from EE pose error:
+#   v_lin = kp_lin * (p_desired - p_current) - kd_lin * v_current
+#   v_rot = kp_rot * rot_error              - kd_rot * w_current
+#
+# rot_error is the axis-angle vector from R_desired * R_current^T.
+# Velocity is clamped to max_lin_vel / max_rot_vel before sending to libfranka.
+# libfranka's internal joint impedance controller handles the rest.
+
+# Position proportional gain [1/s]
+# Higher → faster tracking but more aggressive.  3.0 is a good starting point.
+kp_lin: 3.0
+
+# Linear velocity damping gain (dimensionless)
+# Reduces velocity when already moving fast.  Prevents overshoot.
+kd_lin: 0.5
+
+# Orientation proportional gain [1/s]
+kp_rot: 2.0
+
+# Angular velocity damping gain (dimensionless)
+kd_rot: 0.3
+
+# Maximum linear velocity [m/s]
+# Franka FR3 max Cartesian velocity is ~1.7 m/s.
+# Keep conservative for safety.
+max_lin_vel: 0.5
+
+# Maximum angular velocity [rad/s]
+# Franka FR3 max end-effector rotation rate is ~2.5 rad/s.
+max_rot_vel: 2.5
+
+# libfranka internal velocity low-pass filter cutoff [Hz]
+# Applied to the CartesianVelocities output by libfranka.
+# Lower = smoother but more latency.  100 = almost no filtering.
+cutoff_freq: 100.0
+
+# Gripper grasp parameters (same as joint server)
+gripper_force:   20.0
+gripper_eps_in:  0.08
+gripper_eps_out: 0.08

@@ -47,6 +47,7 @@ class FrankaDirectClient:
             "pose":             list(resp.pose),
             "q":                list(resp.q),
             "target_q":         list(resp.target_q),
+            "target_pose":      list(resp.target_pose),
             "cmd_success_rate": resp.cmd_success_rate,
             "ready":            resp.ready,
             "error":            resp.error,
@@ -82,6 +83,20 @@ class FrankaDirectClient:
         """
         req  = pb2.JointTarget(q=list(q_7))
         resp = self.stub.SetJointTarget(req, timeout=self.timeout)
+        return resp.success, resp.message
+
+    def set_ee_target(self, pose_16: list):
+        """
+        Set desired end-effector pose (Cartesian server).
+
+        Args:
+            pose_16: 16-element list — 4x4 homogeneous transform, column-major.
+                     Same layout as libfranka O_T_EE.
+        Returns:
+            (success: bool, message: str)
+        """
+        req  = pb2.EETarget(pose=list(pose_16))
+        resp = self.stub.SetEETarget(req, timeout=self.timeout)
         return resp.success, resp.message
 
     def set_gripper_target(self, width_m: float, speed_mps: float = 0.1):

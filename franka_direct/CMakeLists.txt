@@ -99,3 +99,23 @@ target_link_libraries(franka_server PRIVATE
     protobuf::libprotobuf
     pthread
 )
+
+# ── franka_server_cartesian executable ────────────────────────────────────────
+add_executable(franka_server_cartesian
+    src/franka_server_cartesian.cpp
+    ${PROTO_SRCS}
+    ${GRPC_SRCS}
+)
+
+target_include_directories(franka_server_cartesian PRIVATE
+    ${CMAKE_BINARY_DIR}
+    ${FRANKA_INCLUDE_DIR}
+    ${FRANKA_BASE}/common/include
+)
+
+target_link_libraries(franka_server_cartesian PRIVATE
+    ${FRANKA_LIB}
+    gRPC::grpc++
+    protobuf::libprotobuf
+    pthread
+)

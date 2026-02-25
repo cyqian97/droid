@@ -5,6 +5,8 @@ package franka_control;
 service FrankaControl {
     // Set desired joint positions (7 doubles in radians)
     rpc SetJointTarget   (JointTarget)   returns (CommandResult);
+    // Set desired end-effector pose (4x4 col-major, 16 doubles)
+    rpc SetEETarget      (EETarget)      returns (CommandResult);
     // Set desired gripper opening width
     rpc SetGripperTarget (GripperTarget) returns (CommandResult);
     // Read current robot + gripper state
@@ -18,6 +20,12 @@ message Empty {}
 message JointTarget {
     // 7 joint positions in radians
     repeated double q = 1;
+}
+
+message EETarget {
+    // 4x4 homogeneous transform, column-major (16 doubles)
+    // Same layout as libfranka O_T_EE
+    repeated double pose = 1;
 }
 
 message GripperTarget {
@@ -36,6 +44,7 @@ message RobotState {
     repeated double target_q      = 6;   // current interpolated joint command (7 doubles)
     double gripper_width          = 7;   // actual gripper opening [m]
     bool   gripper_grasping       = 8;   // true while gripping an object
+    repeated double target_pose   = 9;   // current commanded EE pose (16 doubles)
 }
 
 message CommandResult {
