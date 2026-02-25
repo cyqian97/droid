@@ -16,7 +16,7 @@
 # If omitted, the axis falls back to kp_lin (same for kd).
 
 # Fallback gains (used for any axis not explicitly set)
-kp_lin: 12.0
+kp_lin: 10.0 # set to 15 can cause acceleration_discontinuity, safe to set to 10
 kd_lin: 0.5
 
 # Per-axis overrides (uncomment to tune individually)
@@ -28,7 +28,7 @@ kd_lin: 0.5
 # kd_z: 0.5
 
 # -- Orientation PD gains -----------------------------------------------------
-kp_rot: 2.0
+kp_rot: 2.0 # set to 3 can cause acceleration_discontinuity, safe to set to 2
 kd_rot: 0.3
 
 # -- Velocity limits ----------------------------------------------------------
