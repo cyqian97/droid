@@ -1,8 +1,14 @@
 """
-FrankaDirectClient — Python gRPC client for franka_server.
+FrankaDirectClient — Python gRPC client for franka_direct servers.
 
-Connects to the C++ franka_server that drives the robot via libfranka's
-joint position controller (no Polymetis, no IK, no TorchScript).
+Connects to either of the two C++ servers that drive the Franka FR3
+directly via libfranka (no Polymetis, no IK, no TorchScript):
+
+  - franka_server          (joint torque control)   → use set_joint_target()
+  - franka_server_cartesian (Cartesian velocity PD) → use set_ee_target()
+
+Both servers share the same gRPC proto (franka_control.proto) and this
+client.  The gripper, state query, reset, and stop RPCs work with either.
 """
 
 import os

@@ -215,6 +215,8 @@ static ControllerConfig load_config(const std::string& path) {
 
 // ── Joint-space motion generator ─────────────────────────────────────────
 //
+// Used by both init_q (startup) and the ResetToJoints RPC (runtime).
+//
 // Moves the robot to a target joint configuration using a cosine
 // interpolation profile.  Velocity and acceleration are exactly zero at
 // both endpoints → no discontinuity reflexes.
@@ -710,21 +712,30 @@ int main(int argc, char** argv) {
                 [&](const franka::RobotState& rs,
                     franka::Duration) -> franka::CartesianVelocities
                 {
-                    // ── Read goal pose under lock ────────────────────────
+                    // 1 kHz callback steps:
+                    //   1. Read goal pose (mutex)
+                    //   2. Position error: p_desired - p_current
+                    //   3. Orientation error: axis-angle(R_desired * R_current^T)
+                    //   4. PD velocity: v = Kp * error - Kd * velocity
+                    //   5. Clamp linear / angular velocity norms
+                    //   6. Apply cosine ramp (startup / shutdown)
+                    //   7. Update telemetry (mutex)
+
+                    // ── 1. Read goal pose under lock ─────────────────────
                     std::array<double, 16> gp;
                     {
                         std::lock_guard<std::mutex> lk(state.mtx);
                         gp = state.goal_pose;
                     }
 
-                    // ── Position error ───────────────────────────────────
+                    // ── 2. Position error ────────────────────────────────
                     Vec3 p_cur = pose_position(rs.O_T_EE);
                     Vec3 p_des = pose_position(gp);
                     double ex = p_des.x - p_cur.x;
                     double ey = p_des.y - p_cur.y;
                     double ez = p_des.z - p_cur.z;
 
-                    // ── Orientation error ────────────────────────────────
+                    // ── 3. Orientation error ─────────────────────────────
                     //   R_err = R_desired * R_current^T
                     //   rot_err = axis-angle vector of R_err
                     Mat3 R_cur = pose_rotation(rs.O_T_EE);
@@ -732,11 +743,11 @@ int main(int argc, char** argv) {
                     Mat3 R_err = mat3_mul_Bt(R_des, R_cur);
                     Vec3 rot_err = rotation_error(R_err);
 
-                    // ── Current velocity (last commanded twist) ──────────
+                    // ── 3b. Current velocity (last commanded twist) ──────
                     const auto& v = rs.O_dP_EE_c;
                     // v[0..2] = linear velocity, v[3..5] = angular velocity
 
-                    // ── PD controller (per-axis linear gains) ────────────
+                    // ── 4. PD controller (per-axis linear gains) ─────────
                     double vx = kp_x * ex - kd_x * v[0];
                     double vy = kp_y * ey - kd_y * v[1];
                     double vz = kp_z * ez - kd_z * v[2];
@@ -745,21 +756,21 @@ int main(int argc, char** argv) {
                     double wy = kp_rot * rot_err.y - kd_rot * v[4];
                     double wz = kp_rot * rot_err.z - kd_rot * v[5];
 
-                    // ── Clamp linear velocity ────────────────────────────
+                    // ── 5a. Clamp linear velocity ─────────────────────────
                     double lin_norm = std::sqrt(vx*vx + vy*vy + vz*vz);
                     if (lin_norm > max_lin_vel) {
                         double s = max_lin_vel / lin_norm;
                         vx *= s; vy *= s; vz *= s;
                     }
 
-                    // ── Clamp angular velocity ───────────────────────────
+                    // ── 5b. Clamp angular velocity ────────────────────────
                     double rot_norm = std::sqrt(wx*wx + wy*wy + wz*wz);
                     if (rot_norm > max_rot_vel) {
                         double s = max_rot_vel / rot_norm;
                         wx *= s; wy *= s; wz *= s;
                     }
 
-                    // ── Velocity ramp ────────────────────────────────────
+                    // ── 6. Velocity ramp ─────────────────────────────────
                     // Ramp up from zero on startup so the velocity doesn't
                     // jump discontinuously.  Ramp down to zero on stop so
                     // motion_finished is only set once velocity ≈ 0.
@@ -788,7 +799,7 @@ int main(int argc, char** argv) {
                     vx *= ramp; vy *= ramp; vz *= ramp;
                     wx *= ramp; wy *= ramp; wz *= ramp;
 
-                    // ── Update telemetry under lock ──────────────────────
+                    // ── 7. Update telemetry under lock ───────────────────
                     {
                         std::lock_guard<std::mutex> lk(state.mtx);
                         state.current_pose     = rs.O_T_EE;
@@ -839,9 +850,11 @@ int main(int argc, char** argv) {
             break;
         }
 
-        // ── Handle pending reset request ────────────────────────────────────
+        // ── Handle pending ResetToJoints request ─────────────────────────────
+        //
         // robot.control() returned normally (ramp-down completed).
-        // If a reset was requested, do the joint-space move now.
+        // If a reset was requested, execute the joint-space move and then
+        // re-enter the Cartesian velocity loop with goal_pose = new EE pose.
         if (state.reset_requested.load()) {
             std::array<double, 7> rq;
             double rspeed, rdur;

@@ -61,7 +61,9 @@ def parse_args():
     p.add_argument("--no-reset", action="store_true", default=False,
                    help="Do not return to initial pose after motion")
     p.add_argument("--reset-speed", type=float, default=0.2,
-                   help="Joint move speed factor [0..1] (default: 0.5)")
+                   help="Joint move speed factor [0..1] (default: 0.2)")
+    p.add_argument("--skip-gripper-test", action="store_true", default=False,
+                   help="Skip the gripper open/close test at startup")
 
     g = p.add_argument_group("translation offsets (mm, in base frame)")
     g.add_argument("--x_mm", type=float, default=0.0, help="X displacement in mm")
@@ -126,6 +128,8 @@ def main():
     dp = np.array([args.x_mm, args.y_mm, args.z_mm])      # mm
     dr = np.array([args.x_deg, args.y_deg, args.z_deg])    # deg
 
+    # Home joint configuration for the FR3 (slightly tucked-in pose).
+    # Used by ResetToJoints to move the arm to a known starting pose.
     HOME_Q = [0.0, -np.pi / 5, 0.0, -4 * np.pi / 5, 0.0, 3 * np.pi / 5, 0.0]
 
     if np.allclose(dp, 0) and np.allclose(dr, 0):
@@ -168,13 +172,16 @@ def main():
         print("  Skipping home reset.")
 
     # ── Gripper open/close test ───────────────────────────────────────────────
-    print("\n  Gripper test: closing ...")
-    client.set_gripper_target(0.0, 0.1)
-    time.sleep(3.0)
-    print("  Gripper test: opening ...")
-    client.set_gripper_target(0.08, 0.1)
-    time.sleep(3.0)
-    print("  Gripper test done.")
+    if not args.skip_gripper_test:
+        print("\n  Gripper test: closing ...")
+        client.set_gripper_target(0.0, 0.1)
+        time.sleep(3.0)
+        print("  Gripper test: opening ...")
+        client.set_gripper_target(0.08, 0.1)
+        time.sleep(3.0)
+        print("  Gripper test done.")
+    else:
+        print("\n  Skipping gripper test.")
 
     # ── Compute target pose ───────────────────────────────────────────────────
     # Re-read pose after reset — this is our starting reference.

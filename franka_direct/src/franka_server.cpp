@@ -494,7 +494,16 @@ int main(int argc, char** argv) {
                 [&](const franka::RobotState& rs,
                     franka::Duration) -> franka::Torques
                 {
-                    // ── Coriolis feedforward (outside mutex — pure computation) ──
+                    // 1 kHz callback steps:
+                    //   1. Compute coriolis feedforward (no lock needed)
+                    //   2. Lock shared state
+                    //   3. Interpolate interp_q toward goal_q (max_step/tick)
+                    //   4. PD torque: tau = Kp*(interp_q-q) - Kd*dq + coriolis
+                    //   5. Low-pass filter + clamp to tau_limit
+                    //   6. Update telemetry
+                    //   7. Check stop flag
+
+                    // ── 1. Coriolis feedforward (outside mutex — pure computation)
                     //
                     // model.coriolis(rs) = C(q, dq) · dq
                     //   = Coriolis + centrifugal forces (no gravity).
