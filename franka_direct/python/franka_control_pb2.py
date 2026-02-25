@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x14\x66ranka_control.proto\x12\x0e\x66ranka_control\"\x07\n\x05\x45mpty\"\x18\n\x0bJointTarget\x12\t\n\x01q\x18\x01 \x03(\x01\"\x18\n\x08\x45\x45Target\x12\x0c\n\x04pose\x18\x01 \x03(\x01\"-\n\rGripperTarget\x12\r\n\x05width\x18\x01 \x01(\x01\x12\r\n\x05speed\x18\x02 \x01(\x01\"\xb5\x01\n\nRobotState\x12\x0c\n\x04pose\x18\x01 \x03(\x01\x12\t\n\x01q\x18\x02 \x03(\x01\x12\x18\n\x10\x63md_success_rate\x18\x03 \x01(\x01\x12\r\n\x05ready\x18\x04 \x01(\x08\x12\r\n\x05\x65rror\x18\x05 \x01(\t\x12\x10\n\x08target_q\x18\x06 \x03(\x01\x12\x15\n\rgripper_width\x18\x07 \x01(\x01\x12\x18\n\x10gripper_grasping\x18\x08 \x01(\x08\x12\x13\n\x0btarget_pose\x18\t \x03(\x01\"1\n\rCommandResult\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t2\xf9\x02\n\rFrankaControl\x12L\n\x0eSetJointTarget\x12\x1b.franka_control.JointTarget\x1a\x1d.franka_control.CommandResult\x12\x46\n\x0bSetEETarget\x12\x18.franka_control.EETarget\x1a\x1d.franka_control.CommandResult\x12P\n\x10SetGripperTarget\x12\x1d.franka_control.GripperTarget\x1a\x1d.franka_control.CommandResult\x12\x42\n\rGetRobotState\x12\x15.franka_control.Empty\x1a\x1a.franka_control.RobotState\x12<\n\x04Stop\x12\x15.franka_control.Empty\x1a\x1d.franka_control.CommandResultb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x14\x66ranka_control.proto\x12\x0e\x66ranka_control\"\x07\n\x05\x45mpty\"\x18\n\x0bJointTarget\x12\t\n\x01q\x18\x01 \x03(\x01\"\x18\n\x08\x45\x45Target\x12\x0c\n\x04pose\x18\x01 \x03(\x01\"-\n\rGripperTarget\x12\r\n\x05width\x18\x01 \x01(\x01\x12\r\n\x05speed\x18\x02 \x01(\x01\"B\n\x10JointResetTarget\x12\t\n\x01q\x18\x01 \x03(\x01\x12\r\n\x05speed\x18\x02 \x01(\x01\x12\x14\n\x0cmax_duration\x18\x03 \x01(\x01\"\xb5\x01\n\nRobotState\x12\x0c\n\x04pose\x18\x01 \x03(\x01\x12\t\n\x01q\x18\x02 \x03(\x01\x12\x18\n\x10\x63md_success_rate\x18\x03 \x01(\x01\x12\r\n\x05ready\x18\x04 \x01(\x08\x12\r\n\x05\x65rror\x18\x05 \x01(\t\x12\x10\n\x08target_q\x18\x06 \x03(\x01\x12\x15\n\rgripper_width\x18\x07 \x01(\x01\x12\x18\n\x10gripper_grasping\x18\x08 \x01(\x08\x12\x13\n\x0btarget_pose\x18\t \x03(\x01\"1\n\rCommandResult\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t2\xcb\x03\n\rFrankaControl\x12L\n\x0eSetJointTarget\x12\x1b.franka_control.JointTarget\x1a\x1d.franka_control.CommandResult\x12\x46\n\x0bSetEETarget\x12\x18.franka_control.EETarget\x1a\x1d.franka_control.CommandResult\x12P\n\x10SetGripperTarget\x12\x1d.franka_control.GripperTarget\x1a\x1d.franka_control.CommandResult\x12\x42\n\rGetRobotState\x12\x15.franka_control.Empty\x1a\x1a.franka_control.RobotState\x12P\n\rResetToJoints\x12 .franka_control.JointResetTarget\x1a\x1d.franka_control.CommandResult\x12<\n\x04Stop\x12\x15.franka_control.Empty\x1a\x1d.franka_control.CommandResultb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -39,10 +39,12 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_EETARGET']._serialized_end=99
   _globals['_GRIPPERTARGET']._serialized_start=101
   _globals['_GRIPPERTARGET']._serialized_end=146
-  _globals['_ROBOTSTATE']._serialized_start=149
-  _globals['_ROBOTSTATE']._serialized_end=330
-  _globals['_COMMANDRESULT']._serialized_start=332
-  _globals['_COMMANDRESULT']._serialized_end=381
-  _globals['_FRANKACONTROL']._serialized_start=384
-  _globals['_FRANKACONTROL']._serialized_end=761
+  _globals['_JOINTRESETTARGET']._serialized_start=148
+  _globals['_JOINTRESETTARGET']._serialized_end=214
+  _globals['_ROBOTSTATE']._serialized_start=217
+  _globals['_ROBOTSTATE']._serialized_end=398
+  _globals['_COMMANDRESULT']._serialized_start=400
+  _globals['_COMMANDRESULT']._serialized_end=449
+  _globals['_FRANKACONTROL']._serialized_start=452
+  _globals['_FRANKACONTROL']._serialized_end=911
 # @@protoc_insertion_point(module_scope)

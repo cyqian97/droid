@@ -54,6 +54,11 @@ class FrankaControlStub(object):
                 request_serializer=franka__control__pb2.Empty.SerializeToString,
                 response_deserializer=franka__control__pb2.RobotState.FromString,
                 _registered_method=True)
+        self.ResetToJoints = channel.unary_unary(
+                '/franka_control.FrankaControl/ResetToJoints',
+                request_serializer=franka__control__pb2.JointResetTarget.SerializeToString,
+                response_deserializer=franka__control__pb2.CommandResult.FromString,
+                _registered_method=True)
         self.Stop = channel.unary_unary(
                 '/franka_control.FrankaControl/Stop',
                 request_serializer=franka__control__pb2.Empty.SerializeToString,
@@ -92,6 +97,13 @@ class FrankaControlServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ResetToJoints(self, request, context):
+        """Move robot to a joint configuration (blocks until complete)
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def Stop(self, request, context):
         """Stop the control loop gracefully
         """
@@ -121,6 +133,11 @@ def add_FrankaControlServicer_to_server(servicer, server):
                     servicer.GetRobotState,
                     request_deserializer=franka__control__pb2.Empty.FromString,
                     response_serializer=franka__control__pb2.RobotState.SerializeToString,
+            ),
+            'ResetToJoints': grpc.unary_unary_rpc_method_handler(
+                    servicer.ResetToJoints,
+                    request_deserializer=franka__control__pb2.JointResetTarget.FromString,
+                    response_serializer=franka__control__pb2.CommandResult.SerializeToString,
             ),
             'Stop': grpc.unary_unary_rpc_method_handler(
                     servicer.Stop,
@@ -236,6 +253,33 @@ class FrankaControl(object):
             '/franka_control.FrankaControl/GetRobotState',
             franka__control__pb2.Empty.SerializeToString,
             franka__control__pb2.RobotState.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ResetToJoints(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/franka_control.FrankaControl/ResetToJoints',
+            franka__control__pb2.JointResetTarget.SerializeToString,
+            franka__control__pb2.CommandResult.FromString,
             options,
             channel_credentials,
             insecure,

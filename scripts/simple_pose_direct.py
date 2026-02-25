@@ -60,12 +60,8 @@ def parse_args():
                    help="Max duration in seconds (default: 10)")
     p.add_argument("--no-reset", action="store_true", default=False,
                    help="Do not return to initial pose after motion")
-    p.add_argument("--reset-speed", type=float, default=0.3,
-                   help="Joint move speed factor [0..1] (default: 0.3)")
-    p.add_argument("--reset-q", type=float, nargs=7, default=None,
-                   metavar="Q",
-                   help="Home joint configuration (7 angles in rad). "
-                        "If not set, uses server's current target_q.")
+    p.add_argument("--reset-speed", type=float, default=0.2,
+                   help="Joint move speed factor [0..1] (default: 0.5)")
 
     g = p.add_argument_group("translation offsets (mm, in base frame)")
     g.add_argument("--x_mm", type=float, default=0.0, help="X displacement in mm")
@@ -130,6 +126,8 @@ def main():
     dp = np.array([args.x_mm, args.y_mm, args.z_mm])      # mm
     dr = np.array([args.x_deg, args.y_deg, args.z_deg])    # deg
 
+    HOME_Q = [0.0, -np.pi / 5, 0.0, -4 * np.pi / 5, 0.0, 3 * np.pi / 5, 0.0]
+
     if np.allclose(dp, 0) and np.allclose(dr, 0):
         print("[ERROR] No displacement specified. Use --x_mm, --y_mm, --z_mm, --x_deg, --y_deg, --z_deg.")
         sys.exit(1)
@@ -159,16 +157,24 @@ def main():
     print(f"     cmd_success_rate = {state['cmd_success_rate']:.2f}")
 
     # ── Reset to home joint configuration (server-side joint move) ────────
-    reset_q = args.reset_q if args.reset_q is not None else state.get("target_q")
-    if reset_q and len(reset_q) == 7:
+    if not args.no_reset and len(HOME_Q) == 7:
         print(f"\n  Resetting to home joints (speed={args.reset_speed}) ...")
-        ok, msg = client.reset_to_joints(reset_q, speed=args.reset_speed)
+        ok, msg = client.reset_to_joints(HOME_Q, speed=args.reset_speed)
         if ok:
             print(f"  Reset complete.")
         else:
             print(f"  [WARNING] Reset failed: {msg}")
     else:
-        print("  No reset_q available, skipping home reset.")
+        print("  Skipping home reset.")
+
+    # ── Gripper open/close test ───────────────────────────────────────────────
+    print("\n  Gripper test: closing ...")
+    client.set_gripper_target(0.0, 0.1)
+    time.sleep(3.0)
+    print("  Gripper test: opening ...")
+    client.set_gripper_target(0.08, 0.1)
+    time.sleep(3.0)
+    print("  Gripper test done.")
 
     # ── Compute target pose ───────────────────────────────────────────────────
     # Re-read pose after reset — this is our starting reference.
@@ -262,15 +268,6 @@ def main():
 
     except KeyboardInterrupt:
         print("\n[INTERRUPTED]")
-
-    # ── Return to initial pose (server-side joint move) ─────────────────────
-    if not args.no_reset and reset_q and len(reset_q) == 7:
-        print("\n\nReturning to home joint configuration...")
-        ok, msg = client.reset_to_joints(reset_q, speed=args.reset_speed)
-        if ok:
-            print("  Reset complete.")
-        else:
-            print(f"  [WARNING] Reset failed: {msg}")
 
     # ── Summary ───────────────────────────────────────────────────────────────
     print()
