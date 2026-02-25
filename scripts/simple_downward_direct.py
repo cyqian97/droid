@@ -167,22 +167,14 @@ def main():
     R_delta = rot_z(np.radians(args.z_deg)) @ rot_y(np.radians(args.y_deg)) @ rot_x(np.radians(args.x_deg))
     R_target = R_delta @ R_init
 
-    T_target = np.eye(4)
-    T_target[:3, :3] = R_target
-    T_target[:3, 3]  = p_target
-    target_pose16 = mat_to_pose16(T_target)
-
     print(f"\n  Target EE:  x={p_target[0]:.3f}  y={p_target[1]:.3f}  z={p_target[2]:.4f} m")
+    print(f"  Ramp:       {max_steps} steps over {args.duration:.1f} s at {args.hz} Hz")
     input("Press Enter to start ...")
 
-    # ── Send target and monitor ───────────────────────────────────────────────
-    print_banner("TRACKING")
-
-    # Send the target pose once upfront
-    ok, msg = client.set_ee_target(target_pose16)
-    if not ok:
-        print(f"[ERROR] SetEETarget failed: {msg}")
-        sys.exit(1)
+    # ── Incremental ramp toward target ────────────────────────────────────────
+    # Send linearly interpolated poses so the PD controller only sees small
+    # errors each tick.  Measure error against the FINAL target throughout.
+    print_banner("RAMPING")
 
     # Storage for time-series
     timestamps     = []
@@ -197,11 +189,29 @@ def main():
         for step in range(max_steps):
             loop_start = time.monotonic()
 
-            # Re-send target (keeps connection alive, no harm)
+            # Interpolated target for this step
+            frac = (step + 1) / max_steps
+            p_interp = p_init + (p_target - p_init) * frac
+
+            R_interp_delta = (rot_z(np.radians(dr[2] * frac))
+                              @ rot_y(np.radians(dr[1] * frac))
+                              @ rot_x(np.radians(dr[0] * frac)))
+            R_interp = R_interp_delta @ R_init
+
+            T_interp = np.eye(4)
+            T_interp[:3, :3] = R_interp
+            T_interp[:3, 3]  = p_interp
+            interp_pose16 = mat_to_pose16(T_interp)
+
+            # Send interpolated target
             t0 = time.monotonic()
-            client.set_ee_target(target_pose16)
+            ok, msg = client.set_ee_target(interp_pose16)
             rpc_ms = (time.monotonic() - t0) * 1000
             rpc_times.append(rpc_ms)
+
+            if not ok:
+                print(f"\n[ERROR] SetEETarget failed: {msg}")
+                break
 
             # Read current state
             state = client.get_robot_state()
@@ -209,7 +219,7 @@ def main():
                 print(f"\n[ERROR] Robot error: {state['error']}")
                 break
 
-            # Compute errors
+            # Compute errors vs FINAL target
             T_actual = pose16_to_mat(state["pose"])
             p_actual = T_actual[:3, 3]
             R_actual = T_actual[:3, :3]
@@ -225,10 +235,10 @@ def main():
 
             pos_norm = np.linalg.norm(pe)
             sys.stdout.write(
-                f"\r[{t_elapsed:>5.1f}s] "
-                f"pos_err: x={pe[0]:+6.2f} y={pe[1]:+6.2f} z={pe[2]:+6.2f} mm "
+                f"\r[{step+1:>4}/{max_steps}  {t_elapsed:>5.1f}s] "
+                f"err: x={pe[0]:+6.2f} y={pe[1]:+6.2f} z={pe[2]:+6.2f} mm "
                 f"(|{pos_norm:5.2f}|) | "
-                f"rot_err: {re:5.2f} deg | "
+                f"rot={re:5.2f}deg | "
                 f"rate={state['cmd_success_rate']:.3f}    "
             )
             sys.stdout.flush()
@@ -253,7 +263,7 @@ def main():
         pe_norm = np.linalg.norm(pe_arr, axis=1)  # (N,)
         re_arr = np.array(rot_errors_deg)      # (N,)
 
-        print(f"\n  POSITION ERROR (mm):")
+        print(f"\n  POSITION ERROR p_target - p_actual (mm):")
         print(f"    {'':>10}  {'x':>8}  {'y':>8}  {'z':>8}  {'|norm|':>8}")
         # Final error
         print(f"    {'Final':>10}  {pe_arr[-1,0]:>+8.2f}  {pe_arr[-1,1]:>+8.2f}  {pe_arr[-1,2]:>+8.2f}  {pe_norm[-1]:>8.2f}")
@@ -267,7 +277,7 @@ def main():
         print(f"    {'SS mean':>10}  {ss_pe[:,0].mean():>+8.2f}  {ss_pe[:,1].mean():>+8.2f}  {ss_pe[:,2].mean():>+8.2f}  {ss_norm.mean():>8.2f}  (last {len(ss_pe)} steps)")
         print(f"    {'SS std':>10}  {ss_pe[:,0].std():>8.3f}  {ss_pe[:,1].std():>8.3f}  {ss_pe[:,2].std():>8.3f}  {ss_norm.std():>8.3f}")
 
-        print(f"\n  ROTATION ERROR (deg):")
+        print(f"\n  ROTATION ERROR R_target @ R_actual.T (deg):")
         print(f"    Final:     {re_arr[-1]:.3f}")
         print(f"    Best:      {re_arr.min():.3f}  (t={timestamps[np.argmin(re_arr)]:.1f}s)")
         print(f"    SS mean:   {re_arr[ss_start:].mean():.3f}")
