@@ -381,6 +381,17 @@ struct SharedState {
     std::string error{};
 
     std::atomic<bool> stop{false};
+
+    // ── Reset request (gRPC → main loop) ────────────────────────────────
+    // gRPC ResetToJoints sets these, then waits on reset_cv.
+    // The RT callback ramps down; the main loop does the joint move.
+    std::atomic<bool>      reset_requested{false};
+    std::array<double, 7>  reset_q{};
+    double                 reset_speed{0.3};
+    double                 reset_max_duration{5.0};
+    bool                   reset_complete{false};
+    std::string            reset_error{};
+    std::condition_variable reset_cv;
 };
 
 // ── gRPC service implementation ─────────────────────────────────────────────
@@ -447,6 +458,46 @@ public:
             std::lock_guard<std::mutex> lk(gs_.mtx);
             rep->set_gripper_width(gs_.current_width);
             rep->set_gripper_grasping(gs_.is_grasped);
+        }
+        return Status::OK;
+    }
+
+    Status ResetToJoints(ServerContext*,
+                         const franka_control::JointResetTarget* req,
+                         franka_control::CommandResult* rep) override {
+        if (req->q_size() != 7) {
+            rep->set_success(false);
+            rep->set_message("Expected 7 joint angles");
+            return Status::OK;
+        }
+        {
+            std::lock_guard<std::mutex> lk(s_.mtx);
+            for (int i = 0; i < 7; ++i)
+                s_.reset_q[i] = req->q(i);
+            s_.reset_speed        = req->speed() > 0 ? req->speed() : 0.3;
+            s_.reset_max_duration = req->max_duration() > 0 ? req->max_duration() : 5.0;
+            s_.reset_complete     = false;
+            s_.reset_error.clear();
+            s_.reset_requested    = true;   // atomic — RT callback will see it
+        }
+        // Wake RT callback (if in wait_for_goal) to start ramp-down.
+        s_.goal_cv.notify_all();
+
+        // Block until the main loop finishes the joint move.
+        {
+            std::unique_lock<std::mutex> lk(s_.mtx);
+            s_.reset_cv.wait(lk, [&]{
+                return s_.reset_complete || s_.stop.load();
+            });
+        }
+
+        std::lock_guard<std::mutex> lk(s_.mtx);
+        if (s_.reset_error.empty()) {
+            rep->set_success(true);
+            rep->set_message("Reset complete");
+        } else {
+            rep->set_success(false);
+            rep->set_message(s_.reset_error);
         }
         return Status::OK;
     }
@@ -601,11 +652,13 @@ int main(int argc, char** argv) {
         state.ready        = true;
     }
 
-    // Helper: wait for first / new command.
+    // Helper: wait for first / new command (also wakes on reset or stop).
     auto wait_for_goal = [&](uint64_t min_seq) -> bool {
         std::unique_lock<std::mutex> lk(state.mtx);
         state.goal_cv.wait(lk, [&]{
-            return state.goal_seq > min_seq || state.stop.load();
+            return state.goal_seq > min_seq
+                || state.stop.load()
+                || state.reset_requested.load();
         });
         return !state.stop.load();
     };
@@ -712,7 +765,7 @@ int main(int argc, char** argv) {
                     // motion_finished is only set once velocity ≈ 0.
                     double ramp = 1.0;
 
-                    if (!ramping_down && state.stop.load()) {
+                    if (!ramping_down && (state.stop.load() || state.reset_requested.load())) {
                         ramping_down    = true;
                         ramp_down_start = tick;
                     }
@@ -784,6 +837,56 @@ int main(int argc, char** argv) {
             state.error = e.what();
             state.ready = false;
             break;
+        }
+
+        // ── Handle pending reset request ────────────────────────────────────
+        // robot.control() returned normally (ramp-down completed).
+        // If a reset was requested, do the joint-space move now.
+        if (state.reset_requested.load()) {
+            std::array<double, 7> rq;
+            double rspeed, rdur;
+            {
+                std::lock_guard<std::mutex> lk(state.mtx);
+                rq     = state.reset_q;
+                rspeed = state.reset_speed;
+                rdur   = state.reset_max_duration;
+                state.ready = false;
+            }
+
+            std::cout << "[cartesian_server] Reset: moving to joint pose (speed="
+                      << rspeed << ", max_dur=" << rdur << " s)..." << std::endl;
+
+            try {
+                move_to_joint_pose(robot, rq, rspeed, rdur);
+
+                // Re-seed shared state from new pose.
+                franka::RobotState rs0 = robot.readOnce();
+                {
+                    std::lock_guard<std::mutex> lk(state.mtx);
+                    state.current_pose = rs0.O_T_EE;
+                    state.current_q    = rs0.q;
+                    state.goal_pose    = rs0.O_T_EE;
+                    state.target_pose  = rs0.O_T_EE;
+                    state.ready        = true;
+                    state.reset_requested = false;
+                    state.reset_complete  = true;
+                }
+                std::cout << "[cartesian_server] Reset complete." << std::endl;
+            } catch (const franka::Exception& e) {
+                std::cerr << "[cartesian_server] Reset failed: " << e.what() << std::endl;
+                try { robot.automaticErrorRecovery(); } catch (...) {}
+                {
+                    std::lock_guard<std::mutex> lk(state.mtx);
+                    state.reset_error     = e.what();
+                    state.reset_requested = false;
+                    state.reset_complete  = true;
+                    state.ready           = true;
+                }
+            }
+            state.reset_cv.notify_all();
+            // Re-enter the control loop immediately (goal_pose = current pose,
+            // so PD error ≈ 0 and robot holds position).
+            continue;
         }
     }
 

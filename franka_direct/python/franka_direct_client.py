@@ -114,6 +114,26 @@ class FrankaDirectClient:
         resp = self.stub.SetGripperTarget(req, timeout=self.timeout)
         return resp.success, resp.message
 
+    def reset_to_joints(self, q_7: list, speed: float = 0.3, max_duration: float = 5.0,
+                         timeout: float = 30.0):
+        """
+        Move robot to a joint configuration using smooth joint-space motion.
+
+        Blocks until the server completes the move (or errors out).
+
+        Args:
+            q_7:          7-element list of joint positions in radians.
+            speed:        fraction of max joint velocity [0..1] (default 0.3).
+            max_duration: maximum seconds for the move (default 5.0).
+            timeout:      gRPC call timeout in seconds (default 30).
+        Returns:
+            (success: bool, message: str)
+        """
+        req = pb2.JointResetTarget(q=list(q_7), speed=float(speed),
+                                   max_duration=float(max_duration))
+        resp = self.stub.ResetToJoints(req, timeout=timeout)
+        return resp.success, resp.message
+
     def stop(self):
         """Tell the server to finish the control loop gracefully."""
         resp = self.stub.Stop(pb2.Empty(), timeout=self.timeout)

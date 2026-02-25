@@ -8,13 +8,13 @@ at 1 kHz converting pose error to Cartesian velocity commands.
 
 Usage examples:
   # Move 50 mm down in z
-  python scripts/simple_downward_direct.py --z_mm -50
+  python scripts/simple_pose_direct.py --z_mm -50
 
   # Move 30 mm in x, rotate 10 deg about z
-  python scripts/simple_downward_direct.py --x_mm 30 --z_deg 10
+  python scripts/simple_pose_direct.py --x_mm 30 --z_deg 10
 
   # Combined translation + rotation, 15 second timeout
-  python scripts/simple_downward_direct.py --x_mm 20 --y_mm -10 --z_mm -30 --x_deg 5 --duration 15
+  python scripts/simple_pose_direct.py --x_mm 20 --y_mm -10 --z_mm -30 --x_deg 5 --duration 15
 
 Prerequisites:
   1. Build inside Docker:
@@ -24,7 +24,7 @@ Prerequisites:
   3. Launch the Cartesian server (do NOT run launch_robot.sh at the same time):
        docker exec <container> bash /app/droid/franka_direct/launch_server_cartesian.sh
   4. Run this script on the laptop:
-       python scripts/simple_downward_direct.py --z_mm -50
+       python scripts/simple_pose_direct.py --z_mm -50
 """
 
 import argparse
@@ -58,6 +58,14 @@ def parse_args():
                    help="Monitoring frequency in Hz (default: 25)")
     p.add_argument("--duration", type=float, default=10.0,
                    help="Max duration in seconds (default: 10)")
+    p.add_argument("--no-reset", action="store_true", default=False,
+                   help="Do not return to initial pose after motion")
+    p.add_argument("--reset-speed", type=float, default=0.3,
+                   help="Joint move speed factor [0..1] (default: 0.3)")
+    p.add_argument("--reset-q", type=float, nargs=7, default=None,
+                   metavar="Q",
+                   help="Home joint configuration (7 angles in rad). "
+                        "If not set, uses server's current target_q.")
 
     g = p.add_argument_group("translation offsets (mm, in base frame)")
     g.add_argument("--x_mm", type=float, default=0.0, help="X displacement in mm")
@@ -144,23 +152,30 @@ def main():
         print(f"[ERROR] {e}")
         sys.exit(1)
 
-    # ── Get initial pose ──────────────────────────────────────────────────────
-    pose16 = state["target_pose"]
-    if len(pose16) != 16:
-        print(f"[ERROR] Expected 16 pose values, got {len(pose16)}")
-        sys.exit(1)
-
-    T_init = pose16_to_mat(pose16)
-    p_init = T_init[:3, 3].copy()
-    R_init = T_init[:3, :3].copy()
-
-    print(f"[OK] Initial EE target: x={p_init[0]:.3f}  y={p_init[1]:.3f}  z={p_init[2]:.4f} m")
-    act = state["pose"]
-    print(f"     actual EE pose:    x={act[12]:.3f}  y={act[13]:.3f}  z={act[14]:.4f} m")
+    # ── Current state ────────────────────────────────────────────────────────
+    T_actual = pose16_to_mat(state["pose"])
+    p_actual = T_actual[:3, 3]
+    print(f"[OK] Actual EE pose: x={p_actual[0]:.3f}  y={p_actual[1]:.3f}  z={p_actual[2]:.4f} m")
     print(f"     cmd_success_rate = {state['cmd_success_rate']:.2f}")
 
+    # ── Reset to home joint configuration (server-side joint move) ────────
+    reset_q = args.reset_q if args.reset_q is not None else state.get("target_q")
+    if reset_q and len(reset_q) == 7:
+        print(f"\n  Resetting to home joints (speed={args.reset_speed}) ...")
+        ok, msg = client.reset_to_joints(reset_q, speed=args.reset_speed)
+        if ok:
+            print(f"  Reset complete.")
+        else:
+            print(f"  [WARNING] Reset failed: {msg}")
+    else:
+        print("  No reset_q available, skipping home reset.")
+
     # ── Compute target pose ───────────────────────────────────────────────────
-    # Translation offset (mm -> m)
+    # Re-read pose after reset — this is our starting reference.
+    state = client.get_robot_state()
+    T_init = pose16_to_mat(state["pose"])
+    p_init = T_init[:3, 3].copy()
+    R_init = T_init[:3, :3].copy()
     p_target = p_init + dp / 1000.0
 
     print(f"\n  Target EE:  x={p_target[0]:.3f}  y={p_target[1]:.3f}  z={p_target[2]:.4f} m")
@@ -247,6 +262,15 @@ def main():
 
     except KeyboardInterrupt:
         print("\n[INTERRUPTED]")
+
+    # ── Return to initial pose (server-side joint move) ─────────────────────
+    if not args.no_reset and reset_q and len(reset_q) == 7:
+        print("\n\nReturning to home joint configuration...")
+        ok, msg = client.reset_to_joints(reset_q, speed=args.reset_speed)
+        if ok:
+            print("  Reset complete.")
+        else:
+            print(f"  [WARNING] Reset failed: {msg}")
 
     # ── Summary ───────────────────────────────────────────────────────────────
     print()

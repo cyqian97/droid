@@ -11,6 +11,8 @@ service FrankaControl {
     rpc SetGripperTarget (GripperTarget) returns (CommandResult);
     // Read current robot + gripper state
     rpc GetRobotState    (Empty)         returns (RobotState);
+    // Move robot to a joint configuration (blocks until complete)
+    rpc ResetToJoints    (JointResetTarget) returns (CommandResult);
     // Stop the control loop gracefully
     rpc Stop             (Empty)         returns (CommandResult);
 }
@@ -33,6 +35,15 @@ message GripperTarget {
     double width = 1;
     // Max speed [m/s], range [0.01, 0.2]; 0 → use default (0.1 m/s)
     double speed = 2;
+}
+
+message JointResetTarget {
+    // 7 joint angles in radians
+    repeated double q = 1;
+    // Speed factor [0..1]; 0 → use default (0.3)
+    double speed = 2;
+    // Max duration in seconds; 0 → use default (5.0)
+    double max_duration = 3;
 }
 
 message RobotState {
