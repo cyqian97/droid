@@ -163,10 +163,6 @@ def main():
     # Translation offset (mm -> m)
     p_target = p_init + dp / 1000.0
 
-    # Rotation offset: extrinsic XYZ = Rz * Ry * Rx applied in base frame
-    R_delta = rot_z(np.radians(args.z_deg)) @ rot_y(np.radians(args.y_deg)) @ rot_x(np.radians(args.x_deg))
-    R_target = R_delta @ R_init
-
     print(f"\n  Target EE:  x={p_target[0]:.3f}  y={p_target[1]:.3f}  z={p_target[2]:.4f} m")
     print(f"  Ramp:       {max_steps} steps over {args.duration:.1f} s at {args.hz} Hz")
     input("Press Enter to start ...")
@@ -219,13 +215,13 @@ def main():
                 print(f"\n[ERROR] Robot error: {state['error']}")
                 break
 
-            # Compute errors vs FINAL target
+            # Compute errors: commanded pose this step vs actual read-back
             T_actual = pose16_to_mat(state["pose"])
             p_actual = T_actual[:3, 3]
             R_actual = T_actual[:3, :3]
 
-            pe = (p_target - p_actual) * 1000.0   # mm
-            re = np.degrees(rotation_error_angle(R_target, R_actual))
+            pe = (p_interp - p_actual) * 1000.0   # mm
+            re = np.degrees(rotation_error_angle(R_interp, R_actual))
 
             t_elapsed = time.monotonic() - t_start
             timestamps.append(t_elapsed)
@@ -263,25 +259,18 @@ def main():
         pe_norm = np.linalg.norm(pe_arr, axis=1)  # (N,)
         re_arr = np.array(rot_errors_deg)      # (N,)
 
-        print(f"\n  POSITION ERROR p_target - p_actual (mm):")
+        print(f"\n  POSITION TRACKING ERROR  commanded - actual (mm):")
         print(f"    {'':>10}  {'x':>8}  {'y':>8}  {'z':>8}  {'|norm|':>8}")
-        # Final error
-        print(f"    {'Final':>10}  {pe_arr[-1,0]:>+8.2f}  {pe_arr[-1,1]:>+8.2f}  {pe_arr[-1,2]:>+8.2f}  {pe_norm[-1]:>8.2f}")
-        # Min norm (best tracking)
-        best_idx = np.argmin(pe_norm)
-        print(f"    {'Best':>10}  {pe_arr[best_idx,0]:>+8.2f}  {pe_arr[best_idx,1]:>+8.2f}  {pe_arr[best_idx,2]:>+8.2f}  {pe_norm[best_idx]:>8.2f}  (t={timestamps[best_idx]:.1f}s)")
-        # Mean of last 25% of steps (steady-state)
-        ss_start = max(1, len(pe_arr) * 3 // 4)
-        ss_pe = pe_arr[ss_start:]
-        ss_norm = pe_norm[ss_start:]
-        print(f"    {'SS mean':>10}  {ss_pe[:,0].mean():>+8.2f}  {ss_pe[:,1].mean():>+8.2f}  {ss_pe[:,2].mean():>+8.2f}  {ss_norm.mean():>8.2f}  (last {len(ss_pe)} steps)")
-        print(f"    {'SS std':>10}  {ss_pe[:,0].std():>8.3f}  {ss_pe[:,1].std():>8.3f}  {ss_pe[:,2].std():>8.3f}  {ss_norm.std():>8.3f}")
+        print(f"    {'Mean':>10}  {pe_arr[:,0].mean():>+8.2f}  {pe_arr[:,1].mean():>+8.2f}  {pe_arr[:,2].mean():>+8.2f}  {pe_norm.mean():>8.2f}")
+        print(f"    {'Std':>10}  {pe_arr[:,0].std():>8.3f}  {pe_arr[:,1].std():>8.3f}  {pe_arr[:,2].std():>8.3f}  {pe_norm.std():>8.3f}")
+        print(f"    {'Max norm':>10}  {pe_arr[np.argmax(pe_norm),0]:>+8.2f}  {pe_arr[np.argmax(pe_norm),1]:>+8.2f}  {pe_arr[np.argmax(pe_norm),2]:>+8.2f}  {pe_norm.max():>8.2f}  (t={timestamps[np.argmax(pe_norm)]:.1f}s)")
+        print(f"    {'Min norm':>10}  {pe_arr[np.argmin(pe_norm),0]:>+8.2f}  {pe_arr[np.argmin(pe_norm),1]:>+8.2f}  {pe_arr[np.argmin(pe_norm),2]:>+8.2f}  {pe_norm.min():>8.2f}  (t={timestamps[np.argmin(pe_norm)]:.1f}s)")
 
-        print(f"\n  ROTATION ERROR R_target @ R_actual.T (deg):")
-        print(f"    Final:     {re_arr[-1]:.3f}")
-        print(f"    Best:      {re_arr.min():.3f}  (t={timestamps[np.argmin(re_arr)]:.1f}s)")
-        print(f"    SS mean:   {re_arr[ss_start:].mean():.3f}")
-        print(f"    SS std:    {re_arr[ss_start:].std():.4f}")
+        print(f"\n  ROTATION TRACKING ERROR  commanded @ actual^T (deg):")
+        print(f"    Mean:      {re_arr.mean():.3f}")
+        print(f"    Std:       {re_arr.std():.4f}")
+        print(f"    Max:       {re_arr.max():.3f}  (t={timestamps[np.argmax(re_arr)]:.1f}s)")
+        print(f"    Min:       {re_arr.min():.3f}  (t={timestamps[np.argmin(re_arr)]:.1f}s)")
 
     if rpc_times:
         rt = np.array(rpc_times)
