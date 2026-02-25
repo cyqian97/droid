@@ -452,6 +452,20 @@ if ||v_rot|| > max_rot_vel:
 
 This preserves direction while limiting speed.
 
+**Velocity rate limiting (acceleration clamp):**
+
+After absolute clamping, the per-tick velocity *change* is also limited.
+This prevents large jumps when a new `SetEETarget` arrives suddenly:
+
+```
+delta = v_cmd - v_prev
+if ||delta_lin|| > max_lin_accel * dt:
+    delta_lin *= max_lin_accel * dt / ||delta_lin||
+    v_cmd_lin = v_prev_lin + delta_lin
+
+(same for angular with max_rot_accel)
+```
+
 **Velocity ramp (cosine profile):**
 
 To avoid acceleration discontinuities that trigger libfranka reflexes, the
@@ -528,6 +542,8 @@ Same pattern as the joint server:
 | `kd_rot` | `0.3` | Angular velocity damping |
 | `max_lin_vel` | `0.5` | Linear velocity clamp [m/s] |
 | `max_rot_vel` | `2.5` | Angular velocity clamp [rad/s] |
+| `max_lin_accel` | `5.0` | Max linear acceleration [m/s²] |
+| `max_rot_accel` | `10.0` | Max angular acceleration [rad/s²] |
 | `ramp_duration` | `0.5` | Cosine ramp duration [s] |
 | `cutoff_freq` | `100.0` | libfranka internal LPF [Hz] |
 | `init_q` | (disabled) | Initial joint pose [7 angles, rad] |

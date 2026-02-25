@@ -128,8 +128,10 @@ struct ControllerConfig {
     double kd_z        = -1;
     double kp_rot      = 2.0;    // orientation P gain [1/s]
     double kd_rot      = 0.3;    // angular velocity damping
-    double max_lin_vel = 0.5;    // clamp [m/s]
-    double max_rot_vel = 2.5;    // clamp [rad/s]
+    double max_lin_vel   = 0.5;    // clamp [m/s]
+    double max_rot_vel   = 2.5;    // clamp [rad/s]
+    double max_lin_accel = 5.0;    // max linear acceleration [m/s²]
+    double max_rot_accel = 10.0;   // max angular acceleration [rad/s²]
     double cutoff_freq = 100.0;  // libfranka internal velocity LPF [Hz]
     double ramp_duration = 0.5;  // velocity ramp-up/down duration [s]
     double gripper_force   =  20.0;
@@ -190,6 +192,8 @@ static ControllerConfig load_config(const std::string& path) {
         else if (key == "kd_rot")          cfg.kd_rot          = std::stod(val);
         else if (key == "max_lin_vel")     cfg.max_lin_vel     = std::stod(val);
         else if (key == "max_rot_vel")     cfg.max_rot_vel     = std::stod(val);
+        else if (key == "max_lin_accel")   cfg.max_lin_accel   = std::stod(val);
+        else if (key == "max_rot_accel")   cfg.max_rot_accel   = std::stod(val);
         else if (key == "cutoff_freq")     cfg.cutoff_freq     = std::stod(val);
         else if (key == "ramp_duration")   cfg.ramp_duration   = std::stod(val);
         else if (key == "init_speed")      cfg.init_speed      = std::stod(val);
@@ -594,7 +598,8 @@ int main(int argc, char** argv) {
               << "  kp_rot=" << kp_rot << "  kd_rot=" << kd_rot
               << "\n[cartesian_server] Velocity limits: lin=" << max_lin_vel
               << " m/s  rot=" << max_rot_vel
-              << " rad/s  cutoff=" << cfg.cutoff_freq << " Hz"
+              << " rad/s  accel=" << cfg.max_lin_accel << "/" << cfg.max_rot_accel
+              << "  cutoff=" << cfg.cutoff_freq << " Hz"
               << "  ramp=" << cfg.ramp_duration << " s" << std::endl;
 
     SharedState        state;
@@ -694,6 +699,7 @@ int main(int argc, char** argv) {
         uint64_t tick = 0;
         bool     ramping_down = false;
         uint64_t ramp_down_start = 0;
+        std::array<double, 6> prev_cmd = {0, 0, 0, 0, 0, 0};
 
         // Update shared telemetry from fresh read.
         {
@@ -717,7 +723,8 @@ int main(int argc, char** argv) {
                     //   2. Position error: p_desired - p_current
                     //   3. Orientation error: axis-angle(R_desired * R_current^T)
                     //   4. PD velocity: v = Kp * error - Kd * velocity
-                    //   5. Clamp linear / angular velocity norms
+                    //   5a/b. Clamp linear / angular velocity norms
+                    //   5c. Rate-limit velocity change (acceleration clamp)
                     //   6. Apply cosine ramp (startup / shutdown)
                     //   7. Update telemetry (mutex)
 
@@ -770,6 +777,31 @@ int main(int argc, char** argv) {
                         wx *= s; wy *= s; wz *= s;
                     }
 
+                    // ── 5c. Rate-limit velocity change (acceleration clamp) ─
+                    {
+                        constexpr double dt = 0.001;  // 1 kHz
+                        double max_dv_lin = cfg.max_lin_accel * dt;
+                        double max_dv_rot = cfg.max_rot_accel * dt;
+
+                        double dlx = vx - prev_cmd[0], dly = vy - prev_cmd[1], dlz = vz - prev_cmd[2];
+                        double dl_norm = std::sqrt(dlx*dlx + dly*dly + dlz*dlz);
+                        if (dl_norm > max_dv_lin) {
+                            double s = max_dv_lin / dl_norm;
+                            vx = prev_cmd[0] + dlx * s;
+                            vy = prev_cmd[1] + dly * s;
+                            vz = prev_cmd[2] + dlz * s;
+                        }
+
+                        double drx = wx - prev_cmd[3], dry = wy - prev_cmd[4], drz = wz - prev_cmd[5];
+                        double dr_norm = std::sqrt(drx*drx + dry*dry + drz*drz);
+                        if (dr_norm > max_dv_rot) {
+                            double s = max_dv_rot / dr_norm;
+                            wx = prev_cmd[3] + drx * s;
+                            wy = prev_cmd[4] + dry * s;
+                            wz = prev_cmd[5] + drz * s;
+                        }
+                    }
+
                     // ── 6. Velocity ramp ─────────────────────────────────
                     // Ramp up from zero on startup so the velocity doesn't
                     // jump discontinuously.  Ramp down to zero on stop so
@@ -798,6 +830,8 @@ int main(int argc, char** argv) {
 
                     vx *= ramp; vy *= ramp; vz *= ramp;
                     wx *= ramp; wy *= ramp; wz *= ramp;
+
+                    prev_cmd = {vx, vy, vz, wx, wy, wz};
 
                     // ── 7. Update telemetry under lock ───────────────────
                     {
