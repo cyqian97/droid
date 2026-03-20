@@ -71,10 +71,11 @@ def check_keyboard():
     return None
 
 
-def print_status(step, enabled, hz, pos, gripper):
+def print_status(step, enabled, pos_delta, hz, pos, gripper):
     sys.stdout.write(
         f"\r[Step {step:>6}] "
         f"{'MOVING' if enabled else 'PAUSED':<7} | "
+        f"{'Δpos=({:.3f}, {:.3f}, {:.3f})'.format(*pos_delta) if pos_delta is not None else 'Δpos=(---, ---, ---)' } | "
         f"Hz: {hz:>5.1f} | "
         f"xyz=({pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}) | "
         f"gripper={gripper*100:.0f}mm    "
@@ -216,15 +217,16 @@ def main():
             print(f"\n[ERROR] Robot error: {state['error']}")
             break
 
-        # ── Capture robot origin when VR origin resets ──────────────────────
-        if vr.origin_just_reset:
-            robot_origin = pose16_to_mat(state["pose"])
-
         # ── Arm: only move when grip trigger held ───────────────────────────
-        if info["movement_enabled"] and robot_origin is not None:
+        pos_delta = None
+        if info["movement_enabled"]:
             pos_delta, rot_delta, _ = vr.get_pose_delta()
 
-            if pos_delta is not None:
+            # Capture robot origin when VR origin resets
+            if vr.origin_just_reset:
+                robot_origin = pose16_to_mat(state["pose"])
+
+            elif pos_delta is not None and robot_origin is not None:
                 # Compose VR delta with robot origin → absolute target
                 T_target = np.eye(4)
                 T_target[:3, :3] = rot_delta @ robot_origin[:3, :3]
@@ -252,7 +254,7 @@ def main():
 
         actual_hz = 1.0 / max(time.time() - loop_start, 1e-6)
         T_cur = pose16_to_mat(state["pose"])
-        print_status(step_count, info["movement_enabled"], actual_hz,
+        print_status(step_count, info["movement_enabled"], pos_delta, actual_hz,
                      T_cur[:3, 3], state["gripper_width"])
 
     # === Cleanup ==============================================================
