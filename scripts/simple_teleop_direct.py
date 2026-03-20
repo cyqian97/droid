@@ -108,6 +108,9 @@ def main():
 
     def _sigint(sig, frame):
         nonlocal running
+        if not running:
+            # Second Ctrl+C → force exit immediately
+            os._exit(1)
         print("\n\nCtrl+C detected. Stopping...")
         running = False
 
@@ -265,7 +268,8 @@ def main():
         client.close()
     except Exception:
         pass
-    vr.stop()
+    # OculusReader.stop() hangs because the ADB logcat socket read is blocking
+    # and cannot be interrupted.  Force-exit instead.
     os._exit(0)
 
 
