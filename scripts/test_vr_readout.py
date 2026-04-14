@@ -1,26 +1,17 @@
 #!/usr/bin/env python3
 """
-Test script to debug Meta Quest controller readouts via VRController.
+Test script to debug Meta Quest controller readouts.
 
-Uses VRController (with orientation calibration + axis reordering) and plots
-the pose delta — i.e. how far the controller has moved since grip was pressed.
-
+Reads raw data from OculusReader and:
   1. Logs all button press/release events to a timestamped log file.
-  2. Shows a live 3D matplotlib plot of the pose delta (pos_delta + rot triad)
-     in the robot env frame.
+  2. Shows a live 3D matplotlib plot of the right controller's position
+     and orientation (as an XYZ triad).
 
 Usage:
   python scripts/test_vr_readout.py
   python scripts/test_vr_readout.py --left          # track left controller
   python scripts/test_vr_readout.py --hz 30         # faster polling
   python scripts/test_vr_readout.py --no-plot        # log only, no GUI
-
-Controls:
-  Hold GRIP TRIGGER    → enable tracking (captures origin on press)
-  JOYSTICK press       → recalibrate orientation
-  SPACE                → pause/resume plot
-  q                    → quit
-  Ctrl+C               → stop
 
 Press Ctrl+C to stop.  The log file is saved to logs/vr_readout_<timestamp>.log.
 """
@@ -45,12 +36,17 @@ from scipy.spatial.transform import Rotation as R
 # ── Path setup ───────────────────────────────────────────────────────────────
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 sys.path.insert(0, REPO_ROOT)
-sys.path.insert(0, os.path.join(REPO_ROOT, "scripts"))
 
-from vr_controller import VRController
+from droid.oculus_reader.oculus_reader.reader import OculusReader
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
+
+def mat4_to_pos_euler(mat4):
+    """Extract position [x,y,z] and euler [rx,ry,rz] from a 4x4 transform."""
+    pos = mat4[:3, 3].copy()
+    euler = R.from_matrix(mat4[:3, :3]).as_euler("xyz", degrees=True)
+    return pos, euler
 
 
 class ButtonLogger:
@@ -135,7 +131,7 @@ class LivePlot3D:
         self.ax.set_xlabel("X (m)")
         self.ax.set_ylabel("Y (m)")
         self.ax.set_zlabel("Z (m)")
-        self.ax.set_title("VR Controller Pose Delta (env frame)")
+        self.ax.set_title("VR Controller Pose (raw)")
 
         # Trail line
         self.trail_line, = self.ax.plot([], [], [], "b-", alpha=0.4, linewidth=1)
@@ -204,8 +200,8 @@ def main():
     parser.add_argument("--log-dir", type=str, default="logs", help="Log output directory")
     args = parser.parse_args()
 
-    right_controller = not args.left
-    side_name = "right" if right_controller else "left"
+    controller_id = "l" if args.left else "r"
+    side_name = "left" if args.left else "right"
     period = 1.0 / args.hz
 
     # Ctrl+C handler
@@ -224,21 +220,23 @@ def main():
     print(f"VR Controller Debug  ({side_name} hand)")
     print("=" * 55)
 
-    # Initialize VRController
+    # Initialize OculusReader
     print("Connecting to Oculus Quest via ADB ...")
-    vr = VRController(right_controller=right_controller)
-    print("[OK] VRController started")
+    reader = OculusReader()
+    print("[OK] OculusReader started")
 
     # Wait for first data
     print("Waiting for controller data ...")
     deadline = time.time() + 10.0
     while time.time() < deadline:
-        if vr.get_info()["controller_on"]:
+        transforms, buttons = reader.get_transformations_and_buttons()
+        if controller_id in transforms:
             print(f"[OK] {side_name} controller detected")
             break
         time.sleep(0.1)
     else:
         print(f"[FAIL] No data from {side_name} controller after 10s")
+        reader.stop()
         sys.exit(1)
 
     # Initialize logger and plot
@@ -251,8 +249,7 @@ def main():
         print("[OK] 3D plot window opened")
 
     print()
-    print("Hold GRIP TRIGGER to enable tracking (JOYSTICK to recalibrate orientation)")
-    print("Press SPACE to pause/resume, q to quit, Ctrl+C to stop")
+    print("Recording ... press SPACE to pause/resume, Ctrl+C to stop")
     print("-" * 55)
 
     count = 0
@@ -291,33 +288,27 @@ def main():
                 time.sleep(0.05)
                 continue
 
-            # Log button events (read from VRController's internal state)
-            with vr._lock:
-                buttons = dict(vr._state["buttons"])
+            transforms, buttons = reader.get_transformations_and_buttons()
+
+            # Log button events
             if buttons:
                 logger.update(buttons)
 
-            # Get pose delta from VRController
-            info = vr.get_info()
-            pos_delta, rot_delta, _ = vr.get_pose_delta()
-
-            if pos_delta is not None and rot_delta is not None:
-                euler = R.from_matrix(rot_delta).as_euler("xyz", degrees=True)
+            # Update plot with controller pose
+            if controller_id in transforms:
+                mat4 = np.asarray(transforms[controller_id])
+                pos, euler = mat4_to_pos_euler(mat4)
 
                 if plot is not None:
-                    mat4 = np.eye(4)
-                    mat4[:3, :3] = rot_delta
-                    mat4[:3, 3] = pos_delta
-                    plot.update(pos_delta, euler, mat4)
+                    plot.update(pos, euler, mat4)
 
                 count += 1
                 if count % (args.hz * 2) == 0:  # print status every 2s
                     elapsed = time.time() - t0
-                    enabled_str = "ENABLED" if info["movement_enabled"] else "PAUSED "
                     sys.stdout.write(
-                        f"\r  [{elapsed:.0f}s] {enabled_str} "
-                        f"Δpos=({pos_delta[0]:+.3f}, {pos_delta[1]:+.3f}, {pos_delta[2]:+.3f}) "
-                        f"Δrot=({euler[0]:+.0f}, {euler[1]:+.0f}, {euler[2]:+.0f})   "
+                        f"\r  [{elapsed:.0f}s] "
+                        f"pos=({pos[0]:+.3f}, {pos[1]:+.3f}, {pos[2]:+.3f}) "
+                        f"rot=({euler[0]:+.0f}, {euler[1]:+.0f}, {euler[2]:+.0f})   "
                     )
                     sys.stdout.flush()
 
@@ -335,6 +326,7 @@ def main():
     print(f"\n\nStopping after {count} samples ({time.time() - t0:.1f}s)")
     logger.close()
     print(f"Log saved to: {log_path}")
+    reader.stop()
     os._exit(0)
 
 

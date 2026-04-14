@@ -24,20 +24,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "droid", 
 from oculus_reader.reader import OculusReader
 
 
-def _reorder_mat(vec):
-    """Build a coordinate reordering matrix from a sign+index vector.
-
-    E.g. [-2, -1, -3, 4] maps:
-      row 0 ← -col 1,  row 1 ← -col 0,  row 2 ← -col 2,  row 3 ← +col 3
-    """
-    n = len(vec)
-    X = np.zeros((n, n))
-    for i in range(n):
-        idx = int(abs(vec[i])) - 1
-        X[i, idx] = np.sign(vec[i])
-    return X
-
-
 class VRController:
     """Minimal VR controller that outputs pose deltas.
 
@@ -45,17 +31,10 @@ class VRController:
     ----------
     right_controller : bool
         True for right hand, False for left.
-    rmat_reorder : list
-        Axis reordering from VR frame to robot workspace frame.
-        Default [-2, -1, -3, 4] matches the original DROID VRPolicy.
     """
 
-    def __init__(self, right_controller=True, rmat_reorder=None):
-        if rmat_reorder is None:
-            rmat_reorder = [-2, -1, -3, 4]
-
+    def __init__(self, right_controller=True):
         self.controller_id = "r" if right_controller else "l"
-        self.global_to_env_mat = _reorder_mat(rmat_reorder)
         self.vr_to_global_mat = np.eye(4)
 
         # Internal state (written by background thread, read by main thread)
@@ -178,7 +157,7 @@ class VRController:
 
         # Apply coordinate transforms
         raw = np.asarray(poses[self.controller_id])
-        transformed = self.global_to_env_mat @ self.vr_to_global_mat @ raw
+        transformed = self.vr_to_global_mat @ raw
 
         cur_pos = transformed[:3, 3].copy()
         cur_rot = transformed[:3, :3].copy()
