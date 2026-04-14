@@ -138,6 +138,69 @@ static ControllerConfig load_config(const std::string& path) {
     return cfg;
 }
 
+// ── Joint-space motion generator ─────────────────────────────────────────────
+//
+// Moves the robot to a target joint configuration using a cosine interpolation
+// profile.  Velocity and acceleration are exactly zero at both endpoints.
+//
+//   q(t) = q_start + (q_goal - q_start) * 0.5 * (1 - cos(π * t / T))
+//
+// Duration T is computed per-joint then synchronized to the slowest joint.
+
+static void move_to_joint_pose(franka::Robot& robot,
+                                const std::array<double, 7>& q_goal,
+                                double speed_factor,
+                                double max_duration) {
+    // FR3 max joint velocities [rad/s] (conservative, from datasheet).
+    constexpr std::array<double, 7> dq_max = {2.175, 2.175, 2.175, 2.175, 2.61, 2.61, 2.61};
+
+    robot.setCollisionBehavior(
+        {{20.0, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0}},
+        {{20.0, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0}},
+        {{10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0}},
+        {{10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0}},
+        {{20.0, 20.0, 20.0, 20.0, 20.0, 20.0}},
+        {{20.0, 20.0, 20.0, 20.0, 20.0, 20.0}},
+        {{10.0, 10.0, 10.0, 10.0, 10.0, 10.0}},
+        {{10.0, 10.0, 10.0, 10.0, 10.0, 10.0}});
+
+    std::array<double, 7> q_start{};
+    double T         = 0.0;
+    double t         = 0.0;
+    bool   first_tick = true;
+
+    robot.control(
+        [&](const franka::RobotState& rs, franka::Duration period) -> franka::JointPositions {
+            t += period.toSec();
+
+            if (first_tick) {
+                first_tick = false;
+                q_start    = rs.q;
+
+                // Per-joint duration: T_j = π * |Δq_j| / (2 * speed * dq_max_j)
+                for (int i = 0; i < 7; ++i) {
+                    double dq = std::abs(q_goal[i] - q_start[i]);
+                    double Tj = M_PI * dq / (2.0 * speed_factor * dq_max[i]);
+                    if (Tj > T) T = Tj;
+                }
+                T = std::max(T, 0.5);
+                T = std::min(T, max_duration);
+                std::cout << "[franka_server] Moving to joint target (T=" << T << " s)..." << std::endl;
+            }
+
+            double frac  = std::min(t / T, 1.0);
+            double alpha = 0.5 * (1.0 - std::cos(M_PI * frac));
+
+            std::array<double, 7> q_cmd;
+            for (int i = 0; i < 7; ++i)
+                q_cmd[i] = q_start[i] + (q_goal[i] - q_start[i]) * alpha;
+
+            franka::JointPositions output(q_cmd);
+            if (frac >= 1.0) output.motion_finished = true;
+            return output;
+        });
+}
+
 // ── Gripper shared state ─────────────────────────────────────────────────────
 
 struct GripperSharedState {
@@ -242,6 +305,7 @@ struct SharedState {
     // Written by RT loop (or readOnce init); read by gRPC GetRobotState.
     std::array<double, 16> current_pose{};  // O_T_EE — actual measured pose
     std::array<double, 7>  current_q{};     // actual measured joint positions
+    std::array<double, 7>  current_dq{};    // actual measured joint velocities
     std::array<double, 7>  target_q{};      // current interpolated command
     double cmd_success_rate{0.0};
     bool   ready{false};
@@ -249,6 +313,18 @@ struct SharedState {
 
     // Atomic flags — safe to read/write without mutex.
     std::atomic<bool> stop{false};
+
+    // Reset request (gRPC ResetToJoints → main loop).
+    // gRPC handler writes reset_q and sets reset_requested = true, then
+    // waits on reset_cv.  The RT callback sees reset_requested and exits
+    // robot.control(); the main loop executes move_to_joint_pose and notifies.
+    std::atomic<bool>       reset_requested{false};
+    std::array<double, 7>   reset_q{};
+    double                  reset_speed{0.3};
+    double                  reset_max_duration{5.0};
+    bool                    reset_complete{false};
+    std::string             reset_error{};
+    std::condition_variable reset_cv;
 };
 
 // ── gRPC service implementation ─────────────────────────────────────────────
@@ -298,6 +374,7 @@ public:
             std::lock_guard<std::mutex> lk(s_.mtx);
             for (double v : s_.current_pose) rep->add_pose(v);
             for (double v : s_.current_q)    rep->add_q(v);
+            for (double v : s_.current_dq)   rep->add_dq(v);
             for (double v : s_.target_q)     rep->add_target_q(v);
             rep->set_cmd_success_rate(s_.cmd_success_rate);
             rep->set_ready(s_.ready);
@@ -308,6 +385,43 @@ public:
             std::lock_guard<std::mutex> lk(gs_.mtx);
             rep->set_gripper_width(gs_.current_width);
             rep->set_gripper_grasping(gs_.is_grasped);
+        }
+        return Status::OK;
+    }
+
+    Status ResetToJoints(ServerContext*,
+                         const franka_control::JointResetTarget* req,
+                         franka_control::CommandResult* rep) override {
+        if (req->q_size() != 7) {
+            rep->set_success(false);
+            rep->set_message("Expected 7 joint angles");
+            return Status::OK;
+        }
+        {
+            std::lock_guard<std::mutex> lk(s_.mtx);
+            for (int i = 0; i < 7; ++i)
+                s_.reset_q[i] = req->q(i);
+            s_.reset_speed        = req->speed() > 0 ? req->speed() : 0.3;
+            s_.reset_max_duration = req->max_duration() > 0 ? req->max_duration() : 5.0;
+            s_.reset_complete     = false;
+            s_.reset_error.clear();
+            s_.reset_requested    = true;   // RT callback will see this and exit robot.control()
+        }
+        s_.goal_cv.notify_all();
+
+        // Block until the main loop finishes the joint move.
+        {
+            std::unique_lock<std::mutex> lk(s_.mtx);
+            s_.reset_cv.wait(lk, [&]{ return s_.reset_complete || s_.stop.load(); });
+        }
+
+        std::lock_guard<std::mutex> lk(s_.mtx);
+        if (s_.reset_error.empty()) {
+            rep->set_success(true);
+            rep->set_message("Reset complete");
+        } else {
+            rep->set_success(false);
+            rep->set_message(s_.reset_error);
         }
         return Status::OK;
     }
@@ -438,11 +552,13 @@ int main(int argc, char** argv) {
         state.ready        = true;
     }
 
-    // Helper: block until goal_seq > min_seq, or stop requested.
+    // Helper: block until goal_seq > min_seq, stop, or reset requested.
     auto wait_for_goal = [&](uint64_t min_seq) -> bool {
         std::unique_lock<std::mutex> lk(state.mtx);
         state.goal_cv.wait(lk, [&]{
-            return state.goal_seq > min_seq || state.stop.load();
+            return state.goal_seq > min_seq
+                || state.stop.load()
+                || state.reset_requested.load();
         });
         return !state.stop.load();
     };
@@ -551,11 +667,12 @@ int main(int argc, char** argv) {
                     // ── Update telemetry ──────────────────────────────────
                     state.current_pose     = rs.O_T_EE;
                     state.current_q        = rs.q;
+                    state.current_dq       = rs.dq;
                     state.cmd_success_rate = rs.control_command_success_rate;
                     state.target_q         = interp_q;
 
-                    // ── Finish if stop requested ──────────────────────────
-                    if (state.stop) {
+                    // ── Exit if stop or reset requested ───────────────────
+                    if (state.stop || state.reset_requested.load()) {
                         franka::Torques t(tau);
                         t.motion_finished = true;
                         return t;
@@ -615,6 +732,57 @@ int main(int argc, char** argv) {
             state.error = e.what();
             state.ready = false;
             break;
+        }
+
+        // ── Handle pending ResetToJoints request ─────────────────────────────
+        //
+        // robot.control() returned (motion_finished = true) because reset_requested
+        // was set.  Execute the joint-space move, then re-enter the torque loop.
+        if (state.reset_requested.load()) {
+            std::array<double, 7> rq;
+            double rspeed, rdur;
+            {
+                std::lock_guard<std::mutex> lk(state.mtx);
+                rq     = state.reset_q;
+                rspeed = state.reset_speed;
+                rdur   = state.reset_max_duration;
+                state.ready = false;
+            }
+
+            std::cout << "[franka_server] Reset: moving to joint target (speed="
+                      << rspeed << ", max_dur=" << rdur << " s)..." << std::endl;
+
+            try {
+                move_to_joint_pose(robot, rq, rspeed, rdur);
+
+                // Seed shared state from new pose.
+                franka::RobotState rs_new = robot.readOnce();
+                {
+                    std::lock_guard<std::mutex> lk(state.mtx);
+                    state.current_pose    = rs_new.O_T_EE;
+                    state.current_q       = rs_new.q;
+                    state.current_dq      = rs_new.dq;
+                    state.goal_q          = rs_new.q;
+                    state.target_q        = rs_new.q;
+                    state.ready           = true;
+                    state.reset_requested = false;
+                    state.reset_complete  = true;
+                }
+                std::cout << "[franka_server] Reset complete." << std::endl;
+            } catch (const franka::Exception& e) {
+                std::cerr << "[franka_server] Reset failed: " << e.what() << std::endl;
+                try { robot.automaticErrorRecovery(); } catch (...) {}
+                {
+                    std::lock_guard<std::mutex> lk(state.mtx);
+                    state.reset_error     = e.what();
+                    state.reset_requested = false;
+                    state.reset_complete  = true;
+                    state.ready           = true;
+                }
+            }
+            state.reset_cv.notify_all();
+            // Re-enter torque control (goal_q = current q, so robot holds position).
+            continue;
         }
     }
 

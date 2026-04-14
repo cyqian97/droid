@@ -52,6 +52,7 @@ class FrankaDirectClient:
         return {
             "pose":             list(resp.pose),
             "q":                list(resp.q),
+            "dq":               list(resp.dq),
             "target_q":         list(resp.target_q),
             "target_pose":      list(resp.target_pose),
             "cmd_success_rate": resp.cmd_success_rate,
