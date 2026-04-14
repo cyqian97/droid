@@ -67,12 +67,13 @@ class VRController:
 
     # ── Background polling (same logic as VRPolicy._update_internal_state) ──
 
-    def _poll_loop(self, hz=50, timeout_sec=5):
+    def _poll_loop(self, hz=-1, timeout_sec=5):
         last_read = time.time()
         btn_id = self.controller_id.upper()  # "R" or "L"
 
         while self._running:
-            time.sleep(1.0 / hz)
+            if hz > 0:
+                time.sleep(1.0 / hz)
 
             poses, buttons = self.oculus_reader.get_transformations_and_buttons()
 
