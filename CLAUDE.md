@@ -73,7 +73,7 @@ python scripts/simple_joint_direct.py --joints 3     # Sinusoidal joint 3 motion
 
 Server env vars: `ROBOT_IP` (default `192.168.1.11`), `GRPC_ADDR` (default `0.0.0.0:50052`), `CONFIG_FILE`, `POLICY_HZ` (default `25`, joint server only).
 
-### Full DROID Pipeline (Polymetis)
+### Full DROID Pipeline — Original Codebase (Polymetis)
 
 NUC Docker must be running `run_server.py` (ZeroRPC port 4242). From laptop:
 ```bash
@@ -91,7 +91,7 @@ Laptop               ──── gRPC    :50052 ──── NUC (franka_direct
 NUC                  ──── EtherCAT       ──── FR3 (192.168.1.11)
 ```
 
-### franka_direct Control Path (Cartesian)
+### franka_direct Control Path — Chengyuan's (Cartesian)
 ```
 Quest 3 → VRController → pos_delta, rot_delta
   → absolute T_target (4×4) → FrankaDirectClient.set_ee_target()
@@ -99,7 +99,7 @@ Quest 3 → VRController → pos_delta, rot_delta
   → 1 kHz RT callback → franka::CartesianVelocities → FR3
 ```
 
-### Polymetis Control Path
+### Polymetis Control Path — Original DROID
 ```
 Quest 3 → VRPolicy → cartesian velocity [-1, 1]
   → ServerInterface.update_command() → ZeroRPC → NUC run_server.py

@@ -36,8 +36,9 @@ from scipy.spatial.transform import Rotation as R
 # ── Path setup ───────────────────────────────────────────────────────────────
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 sys.path.insert(0, REPO_ROOT)
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "droid", "oculus_reader"))
 
-from droid.oculus_reader.oculus_reader.reader import OculusReader
+from oculus_reader.reader import OculusReader
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────

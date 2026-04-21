@@ -104,18 +104,19 @@ class VRController:
                 self._reset_origin = True
 
             # Orientation reset on joystick press
-            should_reset_orient = buttons.get(joy_key, False)
-            if should_reset_orient or self._reset_orientation:
-                if self.controller_id in poses:
-                    raw = np.asarray(poses[self.controller_id])
-                    try:
-                        self.vr_to_global_mat = np.linalg.inv(raw)
-                    except np.linalg.LinAlgError:
-                        self.vr_to_global_mat = np.eye(4)
-                    # Stop updating once grip is held or joystick released
-                    stop = cur_enabled or buttons.get(joy_key, False)
-                    if stop:
-                        self._reset_orientation = False
+            # # Temporally disable this reset
+            # should_reset_orient = buttons.get(joy_key, False)
+            # if should_reset_orient or self._reset_orientation:
+            #     if self.controller_id in poses:
+            #         raw = np.asarray(poses[self.controller_id])
+            #         try:
+            #             self.vr_to_global_mat = np.linalg.inv(raw)
+            #         except np.linalg.LinAlgError:
+            #             self.vr_to_global_mat = np.eye(4)
+            #         # Stop updating once grip is held or joystick released
+            #         stop = cur_enabled or buttons.get(joy_key, False)
+            #         if stop:
+            #             self._reset_orientation = False
 
     # ── Public API ──────────────────────────────────────────────────────────
 
