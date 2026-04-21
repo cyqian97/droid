@@ -103,20 +103,22 @@ class VRController:
             if toggled:
                 self._reset_origin = True
 
-            # Orientation reset on joystick press
-            # # Temporally disable this reset
-            # should_reset_orient = buttons.get(joy_key, False)
-            # if should_reset_orient or self._reset_orientation:
-            #     if self.controller_id in poses:
-            #         raw = np.asarray(poses[self.controller_id])
-            #         try:
-            #             self.vr_to_global_mat = np.linalg.inv(raw)
-            #         except np.linalg.LinAlgError:
-            #             self.vr_to_global_mat = np.eye(4)
-            #         # Stop updating once grip is held or joystick released
-            #         stop = cur_enabled or buttons.get(joy_key, False)
-            #         if stop:
-            #             self._reset_orientation = False
+            # Orientation reset on joystick press: cancel yaw only.
+            # Project body Y axis onto XY plane → yaw angle from global Y.
+            should_reset_orient = buttons.get(joy_key, False)
+            if should_reset_orient or self._reset_orientation:
+                if self.controller_id in poses:
+                    R = np.asarray(poses[self.controller_id])[:3, :3]
+                    theta = np.arctan2(R[0, 1], R[1, 1])
+                    c, s = np.cos(theta), np.sin(theta)
+                    self.vr_to_global_mat = np.array([
+                        [ c,  s, 0, 0],
+                        [-s,  c, 0, 0],
+                        [ 0,  0, 1, 0],
+                        [ 0,  0, 0, 1],
+                    ])
+                    if cur_enabled or not buttons.get(joy_key, False):
+                        self._reset_orientation = False
 
     # ── Public API ──────────────────────────────────────────────────────────
 

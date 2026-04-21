@@ -2,3 +2,4 @@
 *.egg-info
 outputs/
 **__pycache__**/
+**recordings**/
