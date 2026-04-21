@@ -65,6 +65,12 @@ python scripts/simple_teleop_direct.py [--left] [--no_reset] [--hz 15]         #
 python scripts/simple_teleop_direct_torque.py [--left] [--no_reset] [--hz 15]  # Joint + IK
 ```
 
+Optional ZED camera recording with `simple_teleop_direct_torque.py`:
+```bash
+python scripts/simple_teleop_direct_torque.py --cam0 <serial> --cam1 <serial> [--cam_fps 60] [--resolution HD720] [--out_dir recordings]
+```
+A/B (or X/Y on left controller) start/stop recording. Omit `--cam0`/`--cam1` to run without cameras.
+
 **Test scripts:**
 ```bash
 python scripts/simple_pose_direct.py --z_mm -50      # Move EE 50mm down
@@ -129,6 +135,8 @@ mat_to_pose16 = lambda T: T.flatten(order='F').tolist()
 - `VRPolicy` (Polymetis path): normalized velocity vectors `[-1, 1]` with axis remapping `rmat_reorder=[-2, -1, -3, 4]`.
 - `VRController` (`scripts/vr_controller.py`, franka_direct path): raw `pos_delta` (metres) and `rot_delta` (SO(3)), applied to absolute robot origin pose.
 
+**VRController yaw calibration (joystick press):** Projects the controller's body Y axis onto the global XY plane to extract yaw angle `θ = atan2(R[0,1], R[1,1])`, then builds `vr_to_global_mat = Rz(-θ)`. This cancels only the yaw offset (aligns body Y → global Y) without affecting pitch or roll. Full `inv(raw)` was intentionally avoided.
+
 **Startup/recovery pattern** (franka_direct servers): Wait for first `SetJointTarget` before calling `robot.control()`. After fault recovery, wait for new target before re-entering. Seed `interp_q` from `robot.readOnce()` before each `robot.control()` call.
 
 ## Key Files
@@ -160,9 +168,10 @@ mat_to_pose16 = lambda T: T.flatten(order='F').tolist()
 | `franka_direct/build.sh` | CMake build script (run inside Docker) |
 | `franka_direct/launch_server.sh` | Launch joint torque server |
 | `franka_direct/launch_server_cartesian.sh` | Launch Cartesian velocity server |
-| `scripts/vr_controller.py` | `VRController` — outputs raw pose deltas (not normalized velocities) |
+| `scripts/vr_controller.py` | `VRController` — outputs raw pose deltas; joystick press resets yaw only |
+| `scripts/zed_utils.py` | ZED camera helpers: `list_cameras()`, `open_camera()`, `CameraRecorder` (two-camera MP4 recording) |
 | `scripts/simple_teleop_direct.py` | Teleoperation via Cartesian server |
-| `scripts/simple_teleop_direct_torque.py` | Teleoperation via joint torque server + IK |
+| `scripts/simple_teleop_direct_torque.py` | Teleoperation via joint torque server + IK; optional ZED recording via A/B buttons |
 | `scripts/simple_joint_direct.py` | Test: sinusoidal joint commands |
 | `scripts/simple_downward_direct.py` | Test: move EE downward |
 | `scripts/test_vr_readout.py` | Test: print raw VR controller output |
