@@ -71,6 +71,8 @@ except ImportError as e:
     print("Make sure dm_robotics and dm_control are installed.")
     sys.exit(1)
 
+from zed_utils import CameraRecorder, ZED_AVAILABLE
+
 from vr_controller import VRController
 
 
@@ -190,6 +192,18 @@ def main():
                         help="franka_server host (default: 192.168.1.6)")
     parser.add_argument("--port",     type=int, default=50052,
                         help="franka_server gRPC port (default: 50052)")
+
+    g = parser.add_argument_group("camera recording (optional)")
+    g.add_argument("--cam0",       type=int, default=None,
+                   help="Serial number of first ZED camera")
+    g.add_argument("--cam1",       type=int, default=None,
+                   help="Serial number of second ZED camera")
+    g.add_argument("--cam_fps",    type=int, default=15,
+                   help="Camera capture and video FPS (default: 15)")
+    g.add_argument("--resolution", type=str, default="HD720",
+                   choices=["HD2K", "HD1080", "HD720", "VGA"])
+    g.add_argument("--out_dir",    type=str, default="recordings",
+                   help="Root directory for saved videos (default: recordings/)")
     args = parser.parse_args()
 
     right_controller = not args.left
@@ -244,6 +258,23 @@ def main():
         print(f"[FAIL] Could not initialize VR controller: {e}")
         sys.exit(1)
 
+    # === Step 3.5: Initialize cameras (optional) ==============================
+    recorder = None
+    if args.cam0 is not None and args.cam1 is not None:
+        if not ZED_AVAILABLE:
+            print("[WARN] pyzed not installed — camera recording disabled.")
+        else:
+            try:
+                recorder = CameraRecorder(
+                    serial0=args.cam0, serial1=args.cam1,
+                    fps=args.cam_fps, resolution=args.resolution,
+                    out_dir=args.out_dir,
+                )
+                recorder.open()
+            except RuntimeError as e:
+                print(f"[WARN] Camera init failed: {e} — recording disabled.")
+                recorder = None
+
     # === Step 4: Optionally reset robot to home ================================
     HOME_Q = [0.0, -np.pi / 5, 0.0, -4 * np.pi / 5, 0.0, 3 * np.pi / 5, 0.0]
 
@@ -267,8 +298,9 @@ def main():
     print(f"  Hold GRIP TRIGGER    → move robot")
     print(f"  INDEX TRIGGER        → proportional gripper (squeeze = close)")
     print(f"  JOYSTICK press       → recalibrate orientation")
-    print(f"  '{btn_a}'                  → stop (success)")
-    print(f"  '{btn_b}'                  → stop (failure)")
+    if recorder is not None:
+        print(f"  '{btn_a}'                  → start recording")
+        print(f"  '{btn_b}'                  → stop and save recording")
     print(f"  Ctrl+C               → emergency stop")
     print(f"  r + Enter            → reset VR state")
     print(f"  q + Enter            → quit")
@@ -277,8 +309,10 @@ def main():
     print()
 
     # === Step 6: Main control loop ============================================
-    step_count = 0
+    step_count   = 0
     robot_origin = None    # 4×4, captured when VR origin resets
+    prev_btn_a   = False
+    prev_btn_b   = False
 
     GRIPPER_OPEN     = 0.08   # Franka Hand max width [m]
     GRIPPER_SPEED    = 0.1    # finger speed [m/s]
@@ -289,16 +323,39 @@ def main():
         loop_start = time.time()
         step_count += 1
 
+        # ── Camera: grab frame (frame-locked to control loop) ───────────────
+        if recorder is not None:
+            recorder.grab()
+
         # ── VR controller info ──────────────────────────────────────────────
         info = vr.get_info()
 
-        # ── Stop signals ────────────────────────────────────────────────────
-        if info["success"]:
-            print(f"\n\n[DONE] '{btn_a}' pressed — trajectory marked as success")
-            break
-        if info["failure"]:
-            print(f"\n\n[DONE] '{btn_b}' pressed — trajectory marked as failure")
-            break
+        # ── Recording buttons (edge-detect to avoid repeat triggers) ────────
+        cur_a = info["success"]
+        cur_b = info["failure"]
+        if cur_a and not prev_btn_a:
+            print(f"\n[BTN] {btn_a} pressed", end="")
+            if recorder is not None:
+                if not recorder.is_recording:
+                    print(" → starting recording ...")
+                    recorder.start()
+                else:
+                    print(" (already recording)")
+            else:
+                print(" (no recorder active)")
+        if cur_b and not prev_btn_b:
+            print(f"\n[BTN] {btn_b} pressed", end="")
+            if recorder is not None:
+                if recorder.is_recording:
+                    print(" → stopping recording ...")
+                    recorder.stop()
+                else:
+                    print(" (not recording)")
+            else:
+                print(" (no recorder active)")
+        prev_btn_a = cur_a
+        prev_btn_b = cur_b
+
         if not info["controller_on"]:
             sys.stdout.write("\r[WARN] VR controller lost. Waiting...          ")
             sys.stdout.flush()
@@ -395,6 +452,8 @@ def main():
     # === Cleanup ==============================================================
     print("\nTeleoperation ended.")
     print(f"Total steps: {step_count}")
+    if recorder is not None:
+        recorder.close()   # saves any in-progress recording, closes cameras
     try:
         client.stop()
         client.close()

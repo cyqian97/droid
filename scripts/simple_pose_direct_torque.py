@@ -204,6 +204,7 @@ def main():
     print(f"  Final  EE:   x={p_init[0]+total_dp[0]/1000:.3f}  "
           f"y={p_init[1]+total_dp[1]/1000:.3f}  "
           f"z={p_init[2]+total_dp[2]/1000:.4f} m")
+
     input("\nPress Enter to start ...")
 
     # ── Control loop ──────────────────────────────────────────────────────────
